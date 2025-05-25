@@ -778,11 +778,14 @@ class ScrabbleClient:
             wait_text = "Waiting for all players to be ready..."
             wait_surface = self.info_font.render(wait_text, True, (200, 0, 0))
             self.screen.blit(wait_surface, (self.MARGIN + 250, info_y + 25))
-        # Show "Your turn" message if it's the player's turn
-        elif self.game_started and any(player.get("current_turn", False) for player in self.players):
-            turn_text = "Your turn"
-            turn_surface = self.info_font.render(turn_text, True, (0, 200, 0))  # Green color
-            self.screen.blit(turn_surface, (self.MARGIN + 250, info_y + 25))
+        # Show "Your turn" message if it's the current player's turn
+        elif self.game_started and not self.game_ended:
+            # Find the current player's username
+            current_player = next((player for player in self.players if player.get("current_turn", False)), None)
+            if current_player and current_player.get("username") == self.username:
+                turn_text = "Your turn"
+                turn_surface = self.info_font.render(turn_text, True, (0, 200, 0))  # Green color
+                self.screen.blit(turn_surface, (self.MARGIN + 250, info_y + 25))
 
     def _draw_error_box(self):
         """Draw a separate error box below the info panel if there is an error message."""

@@ -421,60 +421,69 @@ class ScrabbleServer:
         word_positions = []
         tiles_used = len(new_positions)
         
-        # Find the word in the temporary board
+        # Find the word in the temporary board by only checking positions adjacent to new tiles
         found = False
-        # Check horizontal
-        for row in range(self.BOARD_SIZE):
-            for col in range(self.BOARD_SIZE):
+        
+        # Get all positions to check (new positions and their adjacent positions)
+        positions_to_check = set()
+        for row, col in new_positions:
+            # Add adjacent positions (up, down, left, right)
+            positions_to_check.add((row-1, col))  # up
+            positions_to_check.add((row+1, col))  # down
+            positions_to_check.add((row, col-1))  # left
+            positions_to_check.add((row, col+1))  # right
+            positions_to_check.add((row, col))    # the position itself
+        
+        # Filter out invalid positions
+        positions_to_check = {(r, c) for r, c in positions_to_check 
+                            if 0 <= r < self.BOARD_SIZE and 0 <= c < self.BOARD_SIZE}
+        
+        # Check horizontal words first
+        for row, col in positions_to_check:
+            if temp_board[row][col] != '':
+                # Get the word at this position
+                current_word = []
+                positions = []
+                # Look left
+                c = col
+                while c >= 0 and temp_board[row][c] != '':
+                    current_word.insert(0, temp_board[row][c])
+                    positions.insert(0, (row, c))
+                    c -= 1
+                # Look right
+                c = col + 1
+                while c < self.BOARD_SIZE and temp_board[row][c] != '':
+                    current_word.append(temp_board[row][c])
+                    positions.append((row, c))
+                    c += 1
+                if ''.join(current_word) == word:
+                    word_positions = positions
+                    found = True
+                    break
+        
+        # If not found horizontally, check vertical
+        if not found:
+            for row, col in positions_to_check:
                 if temp_board[row][col] != '':
                     # Get the word at this position
                     current_word = []
                     positions = []
-                    # Look left
-                    c = col
-                    while c >= 0 and temp_board[row][c] != '':
-                        current_word.insert(0, temp_board[row][c])
-                        positions.insert(0, (row, c))
-                        c -= 1
-                    # Look right
-                    c = col + 1
-                    while c < self.BOARD_SIZE and temp_board[row][c] != '':
-                        current_word.append(temp_board[row][c])
-                        positions.append((row, c))
-                        c += 1
+                    # Look up
+                    r = row
+                    while r >= 0 and temp_board[r][col] != '':
+                        current_word.insert(0, temp_board[r][col])
+                        positions.insert(0, (r, col))
+                        r -= 1
+                    # Look down
+                    r = row + 1
+                    while r < self.BOARD_SIZE and temp_board[r][col] != '':
+                        current_word.append(temp_board[r][col])
+                        positions.append((r, col))
+                        r += 1
                     if ''.join(current_word) == word:
                         word_positions = positions
                         found = True
                         break
-            if found:
-                break
-        
-        # If not found horizontally, check vertical
-        if not found:
-            for col in range(self.BOARD_SIZE):
-                for row in range(self.BOARD_SIZE):
-                    if temp_board[row][col] != '':
-                        # Get the word at this position
-                        current_word = []
-                        positions = []
-                        # Look up
-                        r = row
-                        while r >= 0 and temp_board[r][col] != '':
-                            current_word.insert(0, temp_board[r][col])
-                            positions.insert(0, (r, col))
-                            r -= 1
-                        # Look down
-                        r = row + 1
-                        while r < self.BOARD_SIZE and temp_board[r][col] != '':
-                            current_word.append(temp_board[r][col])
-                            positions.append((r, col))
-                            r += 1
-                        if ''.join(current_word) == word:
-                            word_positions = positions
-                            found = True
-                            break
-                if found:
-                    break
         
         print(f"[DEBUG] Word '{word}' positions: {word_positions}")  # Debug log
         # Skip words that don't contain any newly played tiles
@@ -519,7 +528,7 @@ class ScrabbleServer:
             
         # Add bingo bonus (50 points) only for primary words that use all 7 tiles
         if is_primary_word and tiles_used == 7:
-            total_score += 50
+            word_score += 50
             print("[DEBUG] Added bingo bonus of 50 points")  # Debug log
         return word_score
 
