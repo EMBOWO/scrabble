@@ -40,6 +40,7 @@ class ScrabbleClient:
         'rack': (160, 160, 160),        # Gray for rack tiles
         'rack_selected': (200, 200, 200), # Lighter gray for selected rack
         'blank': (128, 0, 128),         # Dark purple for blank tiles
+        'dragging': (180, 180, 180),    # Color for tile being dragged
     }
     
     # Letter colors
@@ -89,6 +90,14 @@ class ScrabbleClient:
         self.players = []  # Initialize players list
         self.exchange_mode = False  # Track if we're in exchange mode
         self.tiles_to_exchange = set()  # Track tiles selected for exchange
+        
+        # Drag state
+        self.dragging_tile = False
+        self.drag_start_index = None
+        self.drag_current_index = None
+        self.drag_offset = (0, 0)  # Offset from mouse position to tile center
+        self.drag_start_pos = (0, 0)  # Starting position of drag
+        self.drag_threshold = 5  # Minimum pixels to move before considering it a drag
         
         # Game end state
         self.game_ended = False
@@ -217,7 +226,6 @@ class ScrabbleClient:
                     self.sock.close()
                     self.sock = None
                 self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.sock.settimeout(10.0)
                 
                 # Get server IP address
                 server_ip = input("Enter server IP address (press Enter for localhost): ").strip()
@@ -227,8 +235,12 @@ class ScrabbleClient:
                 
                 print(f"[DEBUG] Attempting to connect to {self.HOST}:{self.PORT}")
                 try:
+                    # Set a short timeout for the initial connection
+                    self.sock.settimeout(10.0)
                     self.sock.connect((self.HOST, self.PORT))
                     print("[DEBUG] Socket connection successful")
+                    # After connection, set a longer timeout for user input
+                    self.sock.settimeout(None)  # No timeout for user input
                 except ConnectionRefusedError:
                     print("[ERROR] Connection refused. Is the server running?")
                     raise
@@ -243,6 +255,8 @@ class ScrabbleClient:
                 if not username:
                     username = f"Player_{random.randint(1000,9999)}"
                 print(f"[DEBUG] Sending username: {username}")
+                # Set a timeout for the username response
+                self.sock.settimeout(10.0)
                 self.sock.sendall(f"USERNAME:{username}\n".encode())
                 response = self._receive_line()
                 print(f"[DEBUG] Server response: {response}")
@@ -720,10 +734,15 @@ class ScrabbleClient:
         pygame.draw.rect(self.screen, (220, 220, 220), rack_bg)
         pygame.draw.rect(self.screen, (100, 100, 100), rack_bg, 2)
         
+        # Draw tiles
         for i, letter in enumerate(self.tile_rack):
             x = self.MARGIN + i * (self.TILE_SIZE + 5)
             rect = pygame.Rect(x, rack_y, self.TILE_SIZE, self.TILE_SIZE)
             
+            # Skip drawing the tile being dragged
+            if self.dragging_tile and i == self.drag_current_index:
+                continue
+                
             # Highlight selected tile
             if self.exchange_mode:
                 color = (255, 200, 200) if i in self.tiles_to_exchange else self.LETTER_COLORS['rack']
@@ -745,6 +764,31 @@ class ScrabbleClient:
             score_font = pygame.font.SysFont(None, 16)
             score_text = score_font.render(str(score), True, (80, 80, 80))
             score_rect = score_text.get_rect(bottomright=(x + self.TILE_SIZE - 3, rack_y + self.TILE_SIZE - 2))
+            self.screen.blit(score_text, score_rect)
+        
+        # Draw the tile being dragged
+        if self.dragging_tile and self.drag_current_index is not None:
+            mouse_x, mouse_y = pygame.mouse.get_pos()
+            x = mouse_x - self.drag_offset[0] - self.TILE_SIZE // 2
+            y = mouse_y - self.drag_offset[1] - self.TILE_SIZE // 2
+            rect = pygame.Rect(x, y, self.TILE_SIZE, self.TILE_SIZE)
+            
+            # Draw dragged tile
+            pygame.draw.rect(self.screen, self.LETTER_COLORS['dragging'], rect)
+            pygame.draw.rect(self.screen, (0, 0, 0), rect, 2)
+            
+            # Draw letter
+            letter = self.tile_rack[self.drag_current_index]
+            text_color = self.LETTER_TEXT_COLORS['blank'] if letter == '?' else self.LETTER_TEXT_COLORS['normal']
+            text = self.font.render(letter, True, text_color)
+            text_rect = text.get_rect(center=rect.center)
+            self.screen.blit(text, text_rect)
+            
+            # Draw score number
+            score = 0 if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
+            score_font = pygame.font.SysFont(None, 16)
+            score_text = score_font.render(str(score), True, (80, 80, 80))
+            score_rect = score_text.get_rect(bottomright=(x + self.TILE_SIZE - 3, y + self.TILE_SIZE - 2))
             self.screen.blit(score_text, score_rect)
 
     def _draw_info_panel(self):
@@ -918,12 +962,15 @@ class ScrabbleClient:
                         else:
                             self.tiles_to_exchange.add(i)
                     else:
-                        # Normal tile selection
-                        if self.selected_rack_index == i:
-                            self.selected_rack_index = None
-                        else:
-                            self.selected_rack_index = i
-                            self.selected_board_cell = None
+                        # Initialize drag state
+                        self.dragging_tile = True
+                        self.drag_start_index = i
+                        self.drag_current_index = i
+                        self.drag_start_pos = (x, y)
+                        # Calculate offset from mouse to tile center
+                        tile_center_x = self.MARGIN + i * (self.TILE_SIZE + 5) + self.TILE_SIZE // 2
+                        tile_center_y = rack_y + self.TILE_SIZE // 2
+                        self.drag_offset = (x - tile_center_x, y - tile_center_y)
                     return True
         return False
 
@@ -1172,8 +1219,29 @@ class ScrabbleClient:
 
     def _handle_mouse_motion(self, pos):
         """Handle mouse motion events."""
+        x, y = pos
+        
+        # Handle tile dragging
+        if self.dragging_tile and not self.exchange_mode:
+            # Check if we've moved past the drag threshold
+            dx = x - self.drag_start_pos[0]
+            dy = y - self.drag_start_pos[1]
+            distance = (dx * dx + dy * dy) ** 0.5
+            
+            if distance >= self.drag_threshold:
+                rack_y = self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + 10
+                # Calculate new index based on mouse position
+                new_index = (x - self.MARGIN) // (self.TILE_SIZE + 5)
+                new_index = max(0, min(new_index, len(self.tile_rack) - 1))
+                
+                if new_index != self.drag_current_index:
+                    # Swap tiles
+                    self.tile_rack[self.drag_current_index], self.tile_rack[new_index] = \
+                        self.tile_rack[new_index], self.tile_rack[self.drag_current_index]
+                    self.drag_current_index = new_index
+        
+        # Handle scroll bar dragging
         if self.scroll_bar_dragging and self.scroll_bar_rect:
-            x, y = pos
             log_y = self.MARGIN + 150
             # Calculate new scroll position based on mouse position
             relative_y = y - log_y - 30
@@ -1184,6 +1252,29 @@ class ScrabbleClient:
 
     def _handle_mouse_release(self):
         """Handle mouse release events."""
+        if self.dragging_tile:
+            # If we haven't moved much, treat it as a click
+            if not self.exchange_mode:
+                mouse_x, mouse_y = pygame.mouse.get_pos()
+                dx = mouse_x - self.drag_start_pos[0]
+                dy = mouse_y - self.drag_start_pos[1]
+                distance = (dx * dx + dy * dy) ** 0.5
+                
+                if distance < self.drag_threshold:
+                    # Handle as a click
+                    if self.selected_rack_index == self.drag_current_index:
+                        self.selected_rack_index = None
+                    else:
+                        self.selected_rack_index = self.drag_current_index
+                        self.selected_board_cell = None
+            
+            # Reset drag state
+            self.dragging_tile = False
+            self.drag_start_index = None
+            self.drag_current_index = None
+            self.drag_offset = (0, 0)
+            self.drag_start_pos = (0, 0)
+            
         self.scroll_bar_dragging = False
 
     def _handle_keydown(self, key):
@@ -1211,6 +1302,8 @@ class ScrabbleClient:
                 self.showing_blank_dialog = False
                 self.blank_pos = None
             elif key == pygame.K_ESCAPE:
+                # Return the blank tile to the rack when ESC is pressed
+                self.tile_rack.append('?')
                 self.showing_blank_dialog = False
                 self.blank_pos = None
             return
@@ -1346,7 +1439,7 @@ class ScrabbleClient:
                 if self.error_message and pygame.time.get_ticks() - self.error_time > 3000:
                     self.error_message = None
                 self.draw_board()
-                self.clock.tick(30)
+                self.clock.tick(60)
         except KeyboardInterrupt:
             print("\nKeyboard interrupt received, shutting down client...")
             self.running = False
@@ -1521,7 +1614,8 @@ class ScrabbleClient:
             
             # Draw move number
             move_num = f"{i + 1}"
-            num_surface = self.info_font.render(move_num, True, (100, 100, 100))
+            # BLUE (40, 120, 215)
+            num_surface = self.info_font.render(move_num, True, (255, 105, 180))  # Pink color
             if log_y + 30 <= y_offset <= log_y + self.move_log_height:
                 self.screen.blit(num_surface, (log_x + 5, y_offset))
             
