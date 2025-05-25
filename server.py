@@ -415,10 +415,117 @@ class ScrabbleServer:
                 return square_type
         return None
 
-    def _calculate_word_score(self, moves, blank_positions=None):
+    def _calculate_word_score(self, word, new_positions, temp_board=None, temp_blanks=None):
+        word_score = 0
+        word_mult = 1
+        word_positions = []
+        tiles_used = len(new_positions)
+        
+        # Find the word in the temporary board
+        found = False
+        # Check horizontal
+        for row in range(self.BOARD_SIZE):
+            for col in range(self.BOARD_SIZE):
+                if temp_board[row][col] != '':
+                    # Get the word at this position
+                    current_word = []
+                    positions = []
+                    # Look left
+                    c = col
+                    while c >= 0 and temp_board[row][c] != '':
+                        current_word.insert(0, temp_board[row][c])
+                        positions.insert(0, (row, c))
+                        c -= 1
+                    # Look right
+                    c = col + 1
+                    while c < self.BOARD_SIZE and temp_board[row][c] != '':
+                        current_word.append(temp_board[row][c])
+                        positions.append((row, c))
+                        c += 1
+                    if ''.join(current_word) == word:
+                        word_positions = positions
+                        found = True
+                        break
+            if found:
+                break
+        
+        # If not found horizontally, check vertical
+        if not found:
+            for col in range(self.BOARD_SIZE):
+                for row in range(self.BOARD_SIZE):
+                    if temp_board[row][col] != '':
+                        # Get the word at this position
+                        current_word = []
+                        positions = []
+                        # Look up
+                        r = row
+                        while r >= 0 and temp_board[r][col] != '':
+                            current_word.insert(0, temp_board[r][col])
+                            positions.insert(0, (r, col))
+                            r -= 1
+                        # Look down
+                        r = row + 1
+                        while r < self.BOARD_SIZE and temp_board[r][col] != '':
+                            current_word.append(temp_board[r][col])
+                            positions.append((r, col))
+                            r += 1
+                        if ''.join(current_word) == word:
+                            word_positions = positions
+                            found = True
+                            break
+                if found:
+                    break
+        
+        print(f"[DEBUG] Word '{word}' positions: {word_positions}")  # Debug log
+        # Skip words that don't contain any newly played tiles
+        if not any(pos in new_positions for pos in word_positions):
+            print(f"[DEBUG] Skipping word '{word}' as it contains no new tiles")
+            return None
+        
+        # Check if this is the primary word (contains all new moves)
+        is_primary_word = all(any(r == row and c == col for row, col in word_positions) for r, c in new_positions)
+        
+        # Calculate score for this word
+        for row, col in word_positions:
+            letter = temp_board[row][col]  # Use temp_board to get the correct letter
+            # Check if this is a blank tile
+            is_blank = (row, col) in temp_blanks
+            # Always score 0 for blank tiles
+            letter_score = 0 if is_blank else self._get_letter_value(letter)
+            square_type = self._get_square_type(row, col)
+            
+            # Check if this is a new tile (part of the current move)
+            is_new_tile = (row, col) in new_positions
+            
+            print(f"[DEBUG] Letter {letter} at ({row},{col}): base={letter_score}, square={square_type}, new={is_new_tile}, is_blank={is_blank}")  # Debug log
+            
+            if is_new_tile:
+                # Apply letter multipliers only to new tiles
+                if square_type == 'DL':
+                    letter_score *= 2
+                elif square_type == 'TL':
+                    letter_score *= 3
+                # Apply word multipliers to all tiles
+                if square_type == 'DW':
+                    word_mult *= 2
+                elif square_type == 'TW':
+                    word_mult *= 3
+            
+            word_score += letter_score
+            print(f"[DEBUG] Running word score: {word_score}")  # Debug log
+        
+        # Apply word multiplier
+        word_score *= word_mult
+            
+        # Add bingo bonus (50 points) only for primary words that use all 7 tiles
+        if is_primary_word and tiles_used == 7:
+            total_score += 50
+            print("[DEBUG] Added bingo bonus of 50 points")  # Debug log
+        return word_score
+
+    def _calculate_words_score(self, moves, blank_positions=None):
         """Calculate the score for a word, including special squares and bingo bonus."""
         total_score = 0
-        tiles_used = len(moves)
         
         # Get all words created by this play
         words = self._get_all_words(moves)
@@ -445,113 +552,11 @@ class ScrabbleServer:
         
         # Calculate score for each word
         for word in words:
-            word_score = 0
-            word_mult = 1
-            word_positions = []
-            
-            # Find the word in the temporary board
-            found = False
-            # Check horizontal
-            for row in range(self.BOARD_SIZE):
-                for col in range(self.BOARD_SIZE):
-                    if temp_board[row][col] != '':
-                        # Get the word at this position
-                        current_word = []
-                        positions = []
-                        # Look left
-                        c = col
-                        while c >= 0 and temp_board[row][c] != '':
-                            current_word.insert(0, temp_board[row][c])
-                            positions.insert(0, (row, c))
-                            c -= 1
-                        # Look right
-                        c = col + 1
-                        while c < self.BOARD_SIZE and temp_board[row][c] != '':
-                            current_word.append(temp_board[row][c])
-                            positions.append((row, c))
-                            c += 1
-                        if ''.join(current_word) == word:
-                            word_positions = positions
-                            found = True
-                            break
-                if found:
-                    break
-            
-            # If not found horizontally, check vertical
-            if not found:
-                for col in range(self.BOARD_SIZE):
-                    for row in range(self.BOARD_SIZE):
-                        if temp_board[row][col] != '':
-                            # Get the word at this position
-                            current_word = []
-                            positions = []
-                            # Look up
-                            r = row
-                            while r >= 0 and temp_board[r][col] != '':
-                                current_word.insert(0, temp_board[r][col])
-                                positions.insert(0, (r, col))
-                                r -= 1
-                            # Look down
-                            r = row + 1
-                            while r < self.BOARD_SIZE and temp_board[r][col] != '':
-                                current_word.append(temp_board[r][col])
-                                positions.append((r, col))
-                                r += 1
-                            if ''.join(current_word) == word:
-                                word_positions = positions
-                                found = True
-                                break
-                    if found:
-                        break
-            
-            print(f"[DEBUG] Word '{word}' positions: {word_positions}")  # Debug log
-            
-            # Skip words that don't contain any newly played tiles
-            if not any(pos in new_positions for pos in word_positions):
-                print(f"[DEBUG] Skipping word '{word}' as it contains no new tiles")
+            word_score = self._calculate_word_score(word, new_positions, temp_board, temp_blanks)
+            if word_score is None:
                 continue
-            
-            # Check if this is the primary word (contains all new moves)
-            is_primary_word = all(any(r == row and c == col for row, col in word_positions) for r, c, _ in moves)
-            
-            # Calculate score for this word
-            for row, col in word_positions:
-                letter = temp_board[row][col]  # Use temp_board to get the correct letter
-                # Check if this is a blank tile
-                is_blank = (row, col) in temp_blanks
-                # Always score 0 for blank tiles
-                letter_score = 0 if is_blank else self._get_letter_value(letter)
-                square_type = self._get_square_type(row, col)
-                
-                # Check if this is a new tile (part of the current move)
-                is_new_tile = (row, col) in new_positions
-                
-                print(f"[DEBUG] Letter {letter} at ({row},{col}): base={letter_score}, square={square_type}, new={is_new_tile}, is_blank={is_blank}")  # Debug log
-                
-                if is_new_tile:
-                    # Apply letter multipliers only to new tiles
-                    if square_type == 'DL':
-                        letter_score *= 2
-                    elif square_type == 'TL':
-                        letter_score *= 3
-                    # Apply word multipliers to all tiles
-                    if square_type == 'DW':
-                        word_mult *= 2
-                    elif square_type == 'TW':
-                        word_mult *= 3
-                
-                word_score += letter_score
-                print(f"[DEBUG] Running word score: {word_score}")  # Debug log
-            
-            # Apply word multiplier
-            word_score *= word_mult
-            print(f"[DEBUG] Final word score for '{word}': {word_score} (multiplier: {word_mult})")  # Debug log
+            print(f"[DEBUG] Final word score for '{word}': {word_score}")  # Debug log
             total_score += word_score
-            
-            # Add bingo bonus (50 points) only for primary words that use all 7 tiles
-            if is_primary_word and tiles_used == 7:
-                total_score += 50
-                print("[DEBUG] Added bingo bonus of 50 points")  # Debug log
         
         print(f"[DEBUG] Total score for play: {total_score}")  # Debug log
         return total_score
@@ -605,7 +610,7 @@ class ScrabbleServer:
             raise ValueError(message)
         
         # Calculate score for the word
-        word_score = self._calculate_word_score(processed_moves, blank_positions)
+        word_score = self._calculate_words_score(processed_moves, blank_positions)
         
         # Remove tiles from rack
         rack = self.player_racks[username]
@@ -1065,6 +1070,49 @@ class ScrabbleServer:
         """Get the definition of a word from the dictionary."""
         return self.dictionary.get(word, "Definition not found")
 
+    def _calculate_word_score_from_positions(self, word_positions, new_positions, temp_board, temp_blanks):
+        """Calculate score for a word given its exact positions."""
+        word_score = 0
+        word_mult = 1
+        
+        # Check if this is the primary word (contains all new moves)
+        is_primary_word = all(pos in word_positions for pos in new_positions)
+        
+        # Calculate score for this word
+        for row, col in word_positions:
+            letter = temp_board[row][col]
+            # Check if this is a blank tile
+            is_blank = (row, col) in temp_blanks
+            # Always score 0 for blank tiles
+            letter_score = 0 if is_blank else self._get_letter_value(letter)
+            square_type = self._get_square_type(row, col)
+            
+            # Check if this is a new tile (part of the current move)
+            is_new_tile = (row, col) in new_positions
+            
+            if is_new_tile:
+                # Apply letter multipliers only to new tiles
+                if square_type == 'DL':
+                    letter_score *= 2
+                elif square_type == 'TL':
+                    letter_score *= 3
+                # Apply word multipliers to all tiles
+                if square_type == 'DW' or square_type == '*':  # Center star is also double word
+                    word_mult *= 2
+                elif square_type == 'TW':
+                    word_mult *= 3
+            
+            word_score += letter_score
+        
+        # Apply word multiplier
+        word_score *= word_mult
+        
+        # Add bingo bonus (50 points) only for primary words that use all 7 tiles
+        if is_primary_word and len(new_positions) == 7:
+            word_score += 50
+            
+        return word_score
+
     def _log_move(self, username, words, points, positions):
         """Log a move with words played, points, and positions."""
         move_info = {
@@ -1078,15 +1126,22 @@ class ScrabbleServer:
         for row, col, char in positions:
             temp_board[row][col] = char
         
+        # Create a set of positions that were just played
+        new_positions = {(row, col) for row, col, _ in positions}
+        
         # Process each word and its positions
         for word in words:
             # Get all positions for this word
             word_positions_list = self._current_word_positions.get(word, [])
             for word_positions in word_positions_list:
+                # Calculate score for this specific word using the new method
+                word_score = self._calculate_word_score_from_positions(word_positions, new_positions, temp_board, self.board_blanks)
+                
                 word_info = {
                     "word": word,
                     "definition": self._get_word_definition(word),
-                    "positions": []  # List of (row, col, letter, square_type) tuples
+                    "positions": [],  # List of (row, col, letter, square_type) tuples
+                    "score": word_score  # Add individual word score
                 }
                 
                 # Add all positions with their square types

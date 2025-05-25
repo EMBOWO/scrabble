@@ -193,9 +193,16 @@ class ScrabbleClient:
             button_width,
             self.BUTTON_HEIGHT
         )
+        # Add shuffle button to the right of the pass button
+        self.shuffle_button = pygame.Rect(
+            self.MARGIN + 3 * (button_width + button_spacing),
+            button_y,
+            button_width,
+            self.BUTTON_HEIGHT
+        )
         # Add pass button to the right of the ready button
         self.pass_button = pygame.Rect(
-            self.MARGIN + 3 * (button_width + button_spacing),
+            self.MARGIN + 4 * (button_width + button_spacing),
             button_y,
             button_width,
             self.BUTTON_HEIGHT
@@ -629,50 +636,46 @@ class ScrabbleClient:
         if self.move_log and not self.letter_buffer:
             last_move = self.move_log[-1]
             if 'words' in last_move:  # Only for regular moves, not passes or exchanges
-                # Get all positions from all words in the move
-                all_positions = set()
                 for word_info in last_move['words']:
                     positions = [(r, c) for r, c, _, _ in word_info['positions']]
-                    all_positions.update(positions)
-                
-                if all_positions:
-                    # Calculate word rectangle using all positions
-                    min_row = min(r for r, _ in all_positions)
-                    max_row = max(r for r, _ in all_positions)
-                    min_col = min(c for _, c in all_positions)
-                    max_col = max(c for _, c in all_positions)
-                    
-                    # Draw purple rectangle around all words
-                    rect_x = self.MARGIN + min_col * self.TILE_SIZE
-                    rect_y = self.MARGIN + min_row * self.TILE_SIZE
-                    rect_width = (max_col - min_col + 1) * self.TILE_SIZE
-                    rect_height = (max_row - min_row + 1) * self.TILE_SIZE
-                    
-                    # Draw rectangle in purple
-                    pygame.draw.rect(self.screen, (128, 0, 128), (rect_x, rect_y, rect_width, rect_height), 2)
-                    
-                    # Use the total score from the move log
-                    score = last_move['total_points']
-                    score_text = self.font.render(str(score), True, (128, 0, 128))
-                    
-                    # Determine score position based on overall word orientation and position
-                    is_horizontal = min_row == max_row
-                    if is_horizontal:
-                        # For horizontal words
-                        if min_col == 0:  # Word starts at left edge
-                            score_x = rect_x + rect_width + 2
+                    if positions:
+                        # Calculate word rectangle
+                        min_row = min(r for r, _ in positions)
+                        max_row = max(r for r, _ in positions)
+                        min_col = min(c for _, c in positions)
+                        max_col = max(c for _, c in positions)
+                        
+                        # Draw purple rectangle around word
+                        rect_x = self.MARGIN + min_col * self.TILE_SIZE
+                        rect_y = self.MARGIN + min_row * self.TILE_SIZE
+                        rect_width = (max_col - min_col + 1) * self.TILE_SIZE
+                        rect_height = (max_row - min_row + 1) * self.TILE_SIZE
+                        
+                        # Draw rectangle in purple
+                        pygame.draw.rect(self.screen, (128, 0, 128), (rect_x, rect_y, rect_width, rect_height), 2)
+                        
+                        # Use the actual score from the move log instead of recalculating
+                        score = word_info.get('score', 0)  # Get score from move log
+                        score_text = self.font.render(str(score), True, (128, 0, 128))
+                        
+                        # Determine score position based on word orientation and position
+                        is_horizontal = min_row == max_row
+                        if is_horizontal:
+                            # For horizontal words
+                            if min_col == 0:  # Word starts at left edge
+                                score_x = rect_x + rect_width + 2
+                            else:
+                                score_x = rect_x - score_text.get_width() - 2
+                            score_y = rect_y + 2
                         else:
-                            score_x = rect_x - score_text.get_width() - 2
-                        score_y = rect_y + 2
-                    else:
-                        # For vertical words
-                        score_x = rect_x + 2
-                        if min_row == 0:  # Word starts at top edge
-                            score_y = rect_y + rect_height + 2
-                        else:
-                            score_y = rect_y - 17
-                    
-                    self.screen.blit(score_text, (score_x, score_y))
+                            # For vertical words
+                            score_x = rect_x + 2
+                            if min_row == 0:  # Word starts at top edge
+                                score_y = rect_y + rect_height + 2
+                            else:
+                                score_y = rect_y - 17
+                        
+                        self.screen.blit(score_text, (score_x, score_y))
 
         # Draw blank tile dialog if active
         if self.showing_blank_dialog:
@@ -775,6 +778,11 @@ class ScrabbleClient:
             wait_text = "Waiting for all players to be ready..."
             wait_surface = self.info_font.render(wait_text, True, (200, 0, 0))
             self.screen.blit(wait_surface, (self.MARGIN + 250, info_y + 25))
+        # Show "Your turn" message if it's the player's turn
+        elif self.game_started and any(player.get("current_turn", False) for player in self.players):
+            turn_text = "Your turn"
+            turn_surface = self.info_font.render(turn_text, True, (0, 200, 0))  # Green color
+            self.screen.blit(turn_surface, (self.MARGIN + 250, info_y + 25))
 
     def _draw_error_box(self):
         """Draw a separate error box below the info panel if there is an error message."""
@@ -845,6 +853,15 @@ class ScrabbleClient:
             pass_text = self.button_font.render("Pass", True, (0, 0, 0))
             pass_rect = pass_text.get_rect(center=self.pass_button.center)
             self.screen.blit(pass_text, pass_rect)
+            
+        # Shuffle button (only if game started and player is ready)
+        if self.game_started and self.ready and not self.game_ended:
+            shuffle_color = (200, 255, 200)  # Light green
+            pygame.draw.rect(self.screen, shuffle_color, self.shuffle_button)
+            pygame.draw.rect(self.screen, (0, 0, 0), self.shuffle_button, 2)
+            shuffle_text = self.button_font.render("Shuffle", True, (0, 0, 0))
+            shuffle_rect = shuffle_text.get_rect(center=self.shuffle_button.center)
+            self.screen.blit(shuffle_text, shuffle_rect)
 
     def draw_player_list(self):
         """Draw player list in the UI."""
@@ -1140,6 +1157,10 @@ class ScrabbleClient:
                     self.sock.sendall(b"PASS\n")  # Add newline to match server's line-based protocol
                 except Exception as e:
                     self._set_error(f"Failed to pass turn: {e}")
+            return True
+        elif self.shuffle_button.collidepoint(x, y):
+            if self.game_started and not self.game_ended:
+                random.shuffle(self.tile_rack)
             return True
         return False
 
@@ -1563,6 +1584,12 @@ class ScrabbleClient:
                             self.screen.blit(letter_surface, letter_rect)
                         
                         x_offset += 22
+                    
+                    # Draw word score after the tiles
+                    score_text = f" {word_info['score']}"
+                    score_surface = self.info_font.render(score_text, True, (128, 0, 128))  # Purple color
+                    if log_y + 30 <= y_offset <= log_y + self.move_log_height:
+                        self.screen.blit(score_surface, (x_offset, y_offset + 5))
                     
                     # Draw definition
                     y_offset += 25
