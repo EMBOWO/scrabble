@@ -252,6 +252,8 @@ class ScrabbleClient:
                     print("[ERROR] Unexpected server response")
                     continue
                 print("[DEBUG] Connected successfully! Waiting for game data...")
+                # Store the username after successful connection
+                self.username = username
                 # Start network thread after successful connection
                 if self.network_thread is None or not self.network_thread.is_alive():
                     self.network_thread = threading.Thread(target=self._receive_messages, daemon=True)
