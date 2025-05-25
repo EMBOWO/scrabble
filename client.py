@@ -9,6 +9,7 @@ import traceback
 
 class ScrabbleClient:
     # Class constants
+    #TILE_SIZE = 40
     TILE_SIZE = 30
     BOARD_SIZE = 15
     MARGIN = 40
@@ -71,7 +72,7 @@ class ScrabbleClient:
         """Initialize the Scrabble client."""
         pygame.init()
         self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
-        pygame.display.set_caption("Scrabble Client with Tile Drawing")
+        pygame.display.set_caption("BAB GROUP SCRABBLE")
         self.font = pygame.font.SysFont(None, 24)
         self.button_font = pygame.font.SysFont(None, 20)
         self.info_font = pygame.font.SysFont(None, 18)
@@ -1281,7 +1282,7 @@ class ScrabbleClient:
                 content_height += 2  # Space after game end
             elif move.get('type') == 'exchange':  # Exchange move
                 # Calculate height for wrapped exchange text
-                text = f"{move['username']}: Exchanged tiles"
+                text = f"{move['username']}: Exchanged Tiles"
                 words = text.split()
                 lines = []
                 current_line = []
