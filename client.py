@@ -364,6 +364,9 @@ class ScrabbleClient:
                     print("Received move log update")
                     self.move_log = data["moves"]
                     self._calculate_move_log_content_height()  # Calculate height after updating moves
+                    # Scroll to bottom when new moves are added
+                    max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 30))
+                    self.move_log_scroll = max_scroll
                 elif isinstance(data, dict) and data.get("type") == "rack_update":
                     print("Received rack update")
                     self.tile_rack = data.get('rack', [])
@@ -603,7 +606,73 @@ class ScrabbleClient:
                 # Calculate and draw score
                 score = self._calculate_word_score(word, positions)
                 score_text = self.font.render(str(score), True, color)
-                self.screen.blit(score_text, (rect_x, rect_y - 20))
+                
+                # Determine score position based on word orientation and position
+                if is_horizontal:
+                    # For horizontal words
+                    if min_col == 0:  # Word starts at left edge
+                        score_x = rect_x + rect_width + 2
+                    else:
+                        score_x = rect_x - score_text.get_width() - 2
+                    score_y = rect_y + 2
+                else:
+                    # For vertical words
+                    score_x = rect_x + 2
+                    if min_row == 0:  # Word starts at top edge
+                        score_y = rect_y + rect_height + 2
+                    else:
+                        score_y = rect_y - 17
+                
+                self.screen.blit(score_text, (score_x, score_y))
+
+        # Draw last move rectangles and scores
+        if self.move_log and not self.letter_buffer:
+            last_move = self.move_log[-1]
+            if 'words' in last_move:  # Only for regular moves, not passes or exchanges
+                # Get all positions from all words in the move
+                all_positions = set()
+                for word_info in last_move['words']:
+                    positions = [(r, c) for r, c, _, _ in word_info['positions']]
+                    all_positions.update(positions)
+                
+                if all_positions:
+                    # Calculate word rectangle using all positions
+                    min_row = min(r for r, _ in all_positions)
+                    max_row = max(r for r, _ in all_positions)
+                    min_col = min(c for _, c in all_positions)
+                    max_col = max(c for _, c in all_positions)
+                    
+                    # Draw purple rectangle around all words
+                    rect_x = self.MARGIN + min_col * self.TILE_SIZE
+                    rect_y = self.MARGIN + min_row * self.TILE_SIZE
+                    rect_width = (max_col - min_col + 1) * self.TILE_SIZE
+                    rect_height = (max_row - min_row + 1) * self.TILE_SIZE
+                    
+                    # Draw rectangle in purple
+                    pygame.draw.rect(self.screen, (128, 0, 128), (rect_x, rect_y, rect_width, rect_height), 2)
+                    
+                    # Use the total score from the move log
+                    score = last_move['total_points']
+                    score_text = self.font.render(str(score), True, (128, 0, 128))
+                    
+                    # Determine score position based on overall word orientation and position
+                    is_horizontal = min_row == max_row
+                    if is_horizontal:
+                        # For horizontal words
+                        if min_col == 0:  # Word starts at left edge
+                            score_x = rect_x + rect_width + 2
+                        else:
+                            score_x = rect_x - score_text.get_width() - 2
+                        score_y = rect_y + 2
+                    else:
+                        # For vertical words
+                        score_x = rect_x + 2
+                        if min_row == 0:  # Word starts at top edge
+                            score_y = rect_y + rect_height + 2
+                        else:
+                            score_y = rect_y - 17
+                    
+                    self.screen.blit(score_text, (score_x, score_y))
 
         # Draw blank tile dialog if active
         if self.showing_blank_dialog:
@@ -806,8 +875,6 @@ class ScrabbleClient:
                 # After game start, show points and turn
                 color = (0, 200, 0) if player["current_turn"] else (0, 0, 0)
                 text = f"{player['username']}: {player['points']} pts"
-                if player["current_turn"]:
-                    text += " (Current Turn)"
                 
             player_surface = self.info_font.render(text, True, color)
             player_rect = player_surface.get_rect(x=player_x + 10, y=player_y + 30 + 20 * i)
@@ -1083,8 +1150,10 @@ class ScrabbleClient:
             log_y = self.MARGIN + 150
             # Calculate new scroll position based on mouse position
             relative_y = y - log_y - 30
-            max_scroll = self.move_log_height - 30 - self.scroll_bar_height
-            self.move_log_scroll = max(0, min(max_scroll, relative_y))
+            max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 30))
+            scroll_ratio = relative_y / (self.move_log_height - 30 - self.scroll_bar_height)
+            new_scroll = int(scroll_ratio * max_scroll)
+            self.move_log_scroll = max(0, min(max_scroll, new_scroll))
 
     def _handle_mouse_release(self):
         """Handle mouse release events."""
@@ -1150,10 +1219,8 @@ class ScrabbleClient:
         """Calculate the total height of the move log content."""
         content_height = 0
         for move in self.move_log:
-            # Player name and points line
-            content_height += 20
-            
             if 'words' in move:  # Regular move
+                content_height += 20
                 for word_info in move['words']:
                     # Word tiles line
                     content_height += 25
@@ -1179,11 +1246,34 @@ class ScrabbleClient:
                 # Space between moves
                 content_height += 2
             elif move.get('type') == 'pass':  # Pass move
+                content_height += 20
                 content_height += 2  # Space after pass move
-            else:  # Exchange move
+            elif move.get('type') == 'game_end':  # Game end move
+                content_height += 20
+                # Add height for each player's score
+                content_height += len(move.get('scores', {})) * 20
+                content_height += 2  # Space after game end
+            elif move.get('type') == 'exchange':  # Exchange move
+                # Calculate height for wrapped exchange text
+                text = f"{move['username']}: Exchanged tiles"
+                words = text.split()
+                lines = []
+                current_line = []
+                for word in words:
+                    if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
+                        current_line.append(word)
+                    else:
+                        lines.append(' '.join(current_line))
+                        current_line = [word]
+                if current_line:
+                    lines.append(' '.join(current_line))
+                content_height += len(lines) * 15  # Height for wrapped lines
                 content_height += 2  # Space after exchange move
         
         self.move_log_content_height = content_height
+        # Ensure scroll position is within bounds
+        max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 30))
+        self.move_log_scroll = min(max_scroll, max(0, self.move_log_scroll))
 
     def _handle_mouse_wheel(self, y):
         """Handle mouse wheel scrolling."""
@@ -1197,8 +1287,9 @@ class ScrabbleClient:
             # Calculate max scroll using stored content height
             max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 30))
             
-            # Update scroll position
-            self.move_log_scroll = max(0, min(max_scroll, self.move_log_scroll - y * 30))
+            # Update scroll position with bounds checking
+            new_scroll = self.move_log_scroll - y * 30
+            self.move_log_scroll = max(0, min(max_scroll, new_scroll))
 
     def run(self):
         """Main game loop."""
@@ -1347,8 +1438,9 @@ class ScrabbleClient:
         # Draw moves
         for i, move in enumerate(self.move_log):
             # Calculate move height
-            move_height = 20  # Player name and points
+            move_height = 0  # Player name and points
             if 'words' in move:  # Regular move
+                move_height += 20
                 for word_info in move['words']:
                     move_height += 25  # Word tiles
                     # Add height for definition lines
@@ -1373,8 +1465,21 @@ class ScrabbleClient:
             elif move.get('type') == 'game_end':  # Game end move
                 move_height += 20  # Game end line
                 move_height += 2  # Space after game end
-            else:  # Exchange move
-                move_height += 20  # Exchange move line
+            elif move.get('type') == 'exchange':  # Exchange move
+                # Draw exchange text
+                text = f"{move['username']}: Exchanged tiles"
+                words = text.split()
+                lines = []
+                current_line = []
+                for word in words:
+                    if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
+                        current_line.append(word)
+                    else:
+                        lines.append(' '.join(current_line))
+                        current_line = [word]
+                if current_line:
+                    lines.append(' '.join(current_line))
+                move_height += len(lines) * 15
                 move_height += 2  # Space after exchange move
             
             # Skip if this move would be completely above the visible area
@@ -1388,7 +1493,7 @@ class ScrabbleClient:
                 continue
             
             # Draw move number
-            move_num = f"#{i + 1}"
+            move_num = f"{i + 1}"
             num_surface = self.info_font.render(move_num, True, (100, 100, 100))
             if log_y + 30 <= y_offset <= log_y + self.move_log_height:
                 self.screen.blit(num_surface, (log_x + 5, y_offset))
@@ -1485,7 +1590,8 @@ class ScrabbleClient:
                     
                     y_offset += 2  # Space after definition
                 
-                y_offset += 2  # Space between moves
+                y_offset += 2
+
             elif move.get('type') == 'pass':  # Pass move
                 player_text = f"{move['username']}: Passed turn"
                 player_surface = self.info_font.render(player_text, True, (0, 0, 0))
@@ -1509,13 +1615,28 @@ class ScrabbleClient:
                         self.screen.blit(score_surface, (log_x + 35, y_offset))
                     y_offset += 20
                 y_offset += 2  # Space after game end
-            else:  # Exchange move
-                if 'username' in move and 'tiles_exchanged' in move:
-                    player_text = f"{move['username']}: Exchanged {move['tiles_exchanged']} tiles"
-                    player_surface = self.info_font.render(player_text, True, (0, 0, 0))
+            elif move.get('type') == 'exchange':  # Exchange move
+                # Draw exchange text
+                text = f"{move['username']}: Exchanged tiles"
+                words = text.split()
+                lines = []
+                current_line = []
+                for word in words:
+                    if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
+                        current_line.append(word)
+                    else:
+                        lines.append(' '.join(current_line))
+                        current_line = [word]
+                if current_line:
+                    lines.append(' '.join(current_line))
+                move_height = len(lines) * 15  # Height for wrapped lines
+                move_height += 2  # Space after exchange move
+                # Draw exchange text
+                for line in lines:
+                    player_surface = self.info_font.render(line, True, (0, 0, 0))
                     if log_y + 30 <= y_offset <= log_y + self.move_log_height:
                         self.screen.blit(player_surface, (log_x + 25, y_offset))
-                y_offset += 20
+                    y_offset += 15
                 y_offset += 2  # Space after exchange move
         
         # Reset clipping
@@ -1587,6 +1708,9 @@ class ScrabbleClient:
         # Create a temporary set of blank positions that includes both existing and new blanks
         temp_blanks = self.blank_tiles.copy()
         
+        # Check if this is the primary word (contains all buffered letters)
+        is_primary_word = all((row, col) in positions for row, col in self.letter_buffer)
+        
         for row, col in positions:
             letter = self.board[row][col] if self.board[row][col] != '' else self.letter_buffer.get((row, col))
             # Check if this is a blank tile
@@ -1615,8 +1739,8 @@ class ScrabbleClient:
         # Apply word multiplier
         total_score *= word_mult
         
-        # Add bingo bonus (50 points) if all 7 tiles are used
-        if len(self.letter_buffer) == 7:
+        # Add bingo bonus (50 points) only for primary words that use all 7 tiles
+        if is_primary_word and len(self.letter_buffer) == 7:
             total_score += 50
         
         return total_score

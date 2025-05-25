@@ -30,12 +30,12 @@ class ScrabbleServer:
     }
 
     # Standard Scrabble tile distribution
-    TILE_DISTRIBUTION = {
-        'A': 7, 'B': 0, 'C': 0, 'D': 1, 'E': 0, 'F': 0, 'G': 0, 'H': 0,
-        'I': 0, 'J': 0, 'K': 0, 'L': 0, 'M': 0, 'N': 0, 'O': 0, 'P': 0,
-        'Q': 0, 'R': 0, 'S': 0, 'T': 0, 'U': 0, 'V': 0, 'W': 0, 'X': 0,
-        'Y': 0, 'Z': 0, '?': 0  # * represents blank tiles
-    }
+    # TILE_DISTRIBUTION = {
+    #     'A': 0, 'B': 0, 'C': 0, 'D': 1, 'E': 0, 'F': 0, 'G': 0, 'H': 0,
+    #     'I': 0, 'J': 0, 'K': 0, 'L': 0, 'M': 0, 'N': 0, 'O': 0, 'P': 0,
+    #     'Q': 0, 'R': 0, 'S': 0, 'T': 0, 'U': 0, 'V': 0, 'W': 0, 'X': 0,
+    #     'Y': 0, 'Z': 0, '?': 8  # * represents blank tiles
+    # }
 
     # Add these class constants after the existing ones
     SPECIAL_SQUARES = {
@@ -428,6 +428,9 @@ class ScrabbleServer:
         temp_board = [row[:] for row in self.board]
         temp_blanks = self.board_blanks.copy()  # Copy current blank positions
         
+        # Create a set of positions that were just played
+        new_positions = {(row, col) for row, col, _ in moves}
+        
         # Add client's blank positions to temp_blanks
         if blank_positions:
             temp_blanks.update(blank_positions)
@@ -503,6 +506,14 @@ class ScrabbleServer:
             
             print(f"[DEBUG] Word '{word}' positions: {word_positions}")  # Debug log
             
+            # Skip words that don't contain any newly played tiles
+            if not any(pos in new_positions for pos in word_positions):
+                print(f"[DEBUG] Skipping word '{word}' as it contains no new tiles")
+                continue
+            
+            # Check if this is the primary word (contains all new moves)
+            is_primary_word = all(any(r == row and c == col for row, col in word_positions) for r, c, _ in moves)
+            
             # Calculate score for this word
             for row, col in word_positions:
                 letter = temp_board[row][col]  # Use temp_board to get the correct letter
@@ -513,7 +524,7 @@ class ScrabbleServer:
                 square_type = self._get_square_type(row, col)
                 
                 # Check if this is a new tile (part of the current move)
-                is_new_tile = any(r == row and c == col for r, c, _ in moves)
+                is_new_tile = (row, col) in new_positions
                 
                 print(f"[DEBUG] Letter {letter} at ({row},{col}): base={letter_score}, square={square_type}, new={is_new_tile}, is_blank={is_blank}")  # Debug log
                 
@@ -536,11 +547,11 @@ class ScrabbleServer:
             word_score *= word_mult
             print(f"[DEBUG] Final word score for '{word}': {word_score} (multiplier: {word_mult})")  # Debug log
             total_score += word_score
-        
-        # Add bingo bonus (50 points) if all 7 tiles are used
-        if tiles_used == 7:
-            total_score += 50
-            print("[DEBUG] Added bingo bonus of 50 points")  # Debug log
+            
+            # Add bingo bonus (50 points) only for primary words that use all 7 tiles
+            if is_primary_word and tiles_used == 7:
+                total_score += 50
+                print("[DEBUG] Added bingo bonus of 50 points")  # Debug log
         
         print(f"[DEBUG] Total score for play: {total_score}")  # Debug log
         return total_score
@@ -605,14 +616,6 @@ class ScrabbleServer:
             else:
                 rack.remove(char)  # Remove the regular tile
         
-        # Check for game end before filling rack
-        if not self.player_racks[username]:  # Player used all their tiles
-            self._end_game()
-            return
-            
-        # Fill rack
-        new_tiles = self._fill_rack(conn)
-        
         # Apply all valid moves and update blank positions
         for row, col, char in processed_moves:
             self.board[row][col] = char
@@ -627,8 +630,11 @@ class ScrabbleServer:
         # Log the move
         self._log_move(username, words, word_score, processed_moves)
         
-        # Update player's score
+        # Update player's score BEFORE checking for game end
         self.player_points[username] += word_score
+        
+        # Fill rack
+        new_tiles = self._fill_rack(conn)
         
         # Reset consecutive passes since a valid move was made
         self.consecutive_passes = 0
@@ -646,6 +652,11 @@ class ScrabbleServer:
         self._broadcast_board()
         self._broadcast_player_list()
         self._broadcast_move_log()  # Ensure move log is broadcast
+        
+        # Check for game end - only end if player used all tiles AND bag is empty
+        if not self.player_racks[username] and self._get_tiles_remaining() == 0:
+            self._end_game()
+            return
 
     def _handle_pass(self, conn):
         """Handle a player passing their turn."""
@@ -814,7 +825,7 @@ class ScrabbleServer:
             # Log the exchange move
             exchange_info = {
                 "username": username,
-                "tiles_exchanged": len(tiles_to_exchange)
+                "type": "exchange"
             }
             self.move_log.append(exchange_info)
             
@@ -1143,6 +1154,9 @@ class ScrabbleServer:
         for row, col, char in moves:
             temp_board[row][col] = char
         
+        # Create a set of positions that were just played
+        new_positions = {(row, col) for row, col, _ in moves}
+        
         # Check horizontal words
         for row, col, char in moves:
             # Get the word at this position
@@ -1160,8 +1174,8 @@ class ScrabbleServer:
                 word.append(temp_board[row][c])
                 positions.append((row, c))
                 c += 1
-            # Only add the word if it's at least 2 letters long
-            if len(word) >= 2:
+            # Only add the word if it's at least 2 letters long AND contains at least one new position
+            if len(word) >= 2 and any(pos in new_positions for pos in positions):
                 word_str = ''.join(word)
                 positions_tuple = tuple(positions)
                 # Only count as duplicate if positions are different
@@ -1188,8 +1202,8 @@ class ScrabbleServer:
                 word.append(temp_board[r][col])
                 positions.append((r, col))
                 r += 1
-            # Only add the word if it's at least 2 letters long
-            if len(word) >= 2:
+            # Only add the word if it's at least 2 letters long AND contains at least one new position
+            if len(word) >= 2 and any(pos in new_positions for pos in positions):
                 word_str = ''.join(word)
                 positions_tuple = tuple(positions)
                 # Only count as duplicate if positions are different
