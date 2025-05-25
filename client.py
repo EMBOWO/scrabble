@@ -68,6 +68,15 @@ class ScrabbleClient:
         'Q': 10, 'R': 1, 'S': 1, 'T': 1, 'U': 1, 'V': 4, 'W': 4, 'X': 8,
         'Y': 4, 'Z': 10, '?': 0
     }
+    
+    # Input field colors
+    INPUT_COLORS = {
+        'background': (240, 240, 240),
+        'border': (100, 100, 100),
+        'border_active': (0, 120, 215),
+        'text': (0, 0, 0),
+        'placeholder': (150, 150, 150),
+    }
 
     def __init__(self):
         """Initialize the Scrabble client."""
@@ -80,6 +89,14 @@ class ScrabbleClient:
         self.title_font = pygame.font.SysFont(None, 36)  # Larger font for game end screen
         self.clock = pygame.time.Clock()
         self.state_lock = threading.Lock()
+        
+        # Connection screen state
+        self.connection_screen = True
+        self.ip_input = ""
+        self.username_input = ""
+        self.active_input = "ip"  # Track which input is active
+        self.error_message = None
+        self.connecting = False
         
         # Game state
         self.board = [['' for _ in range(self.BOARD_SIZE)] for _ in range(self.BOARD_SIZE)]
@@ -146,9 +163,7 @@ class ScrabbleClient:
         self.network_thread = None
         self.ready = False  # Track if this client is ready
         self.game_started = False  # Track if game has started
-        self.error_message = None  # For displaying error messages
         self.error_time = 0  # For auto-clearing error messages
-        self._connect_to_server()
 
     def _initialize_special_tiles(self):
         """Initialize the special tiles grid."""
@@ -218,74 +233,193 @@ class ScrabbleClient:
             self.BUTTON_HEIGHT
         )
 
+    def _draw_connection_screen(self):
+        """Draw the connection screen with input fields."""
+        # Clear screen
+        self.screen.fill((255, 255, 255))
+        
+        # Draw title
+        title = self.title_font.render("BAB GROUP SCRABBLE", True, (0, 0, 0))
+        title_rect = title.get_rect(centerx=self.WIDTH // 2, y=self.MARGIN)
+        self.screen.blit(title, title_rect)
+        
+        # Draw input fields
+        input_width = 300
+        input_height = 40
+        input_x = (self.WIDTH - input_width) // 2
+        input_y = self.MARGIN + 100
+        
+        # IP Address input
+        ip_label = self.font.render("Server IP:", True, (0, 0, 0))
+        self.screen.blit(ip_label, (input_x, input_y - 30))
+        
+        ip_rect = pygame.Rect(input_x, input_y, input_width, input_height)
+        pygame.draw.rect(self.screen, self.INPUT_COLORS['background'], ip_rect)
+        border_color = self.INPUT_COLORS['border_active'] if self.active_input == "ip" else self.INPUT_COLORS['border']
+        pygame.draw.rect(self.screen, border_color, ip_rect, 2)
+        
+        ip_text = self.ip_input if self.ip_input else "localhost"
+        text_color = self.INPUT_COLORS['text'] if self.ip_input else self.INPUT_COLORS['placeholder']
+        ip_surface = self.font.render(ip_text, True, text_color)
+        ip_text_rect = ip_surface.get_rect(midleft=(input_x + 10, input_y + input_height // 2))
+        self.screen.blit(ip_surface, ip_text_rect)
+        
+        # Username input
+        username_label = self.font.render("Username:", True, (0, 0, 0))
+        self.screen.blit(username_label, (input_x, input_y + input_height + 20))
+        
+        username_rect = pygame.Rect(input_x, input_y + input_height + 50, input_width, input_height)
+        pygame.draw.rect(self.screen, self.INPUT_COLORS['background'], username_rect)
+        border_color = self.INPUT_COLORS['border_active'] if self.active_input == "username" else self.INPUT_COLORS['border']
+        pygame.draw.rect(self.screen, border_color, username_rect, 2)
+        
+        username_text = self.username_input if self.username_input else "Enter username"
+        text_color = self.INPUT_COLORS['text'] if self.username_input else self.INPUT_COLORS['placeholder']
+        username_surface = self.font.render(username_text, True, text_color)
+        username_text_rect = username_surface.get_rect(midleft=(input_x + 10, input_y + input_height + 50 + input_height // 2))
+        self.screen.blit(username_surface, username_text_rect)
+        
+        # Connect button
+        button_width = 200
+        button_height = 40
+        button_x = (self.WIDTH - button_width) // 2
+        button_y = input_y + input_height * 2 + 100
+        
+        connect_rect = pygame.Rect(button_x, button_y, button_width, button_height)
+        button_color = (100, 200, 100) if not self.connecting else (150, 150, 150)
+        pygame.draw.rect(self.screen, button_color, connect_rect)
+        pygame.draw.rect(self.screen, (0, 0, 0), connect_rect, 2)
+        
+        connect_text = "Connecting..." if self.connecting else "Connect"
+        connect_surface = self.font.render(connect_text, True, (0, 0, 0))
+        connect_text_rect = connect_surface.get_rect(center=connect_rect.center)
+        self.screen.blit(connect_surface, connect_text_rect)
+        
+        # Draw error message if any
+        if self.error_message:
+            error_surface = self.font.render(self.error_message, True, (200, 0, 0))
+            error_rect = error_surface.get_rect(centerx=self.WIDTH // 2, y=button_y + button_height + 20)
+            self.screen.blit(error_surface, error_rect)
+        
+        # Store rectangles for click detection
+        self.ip_rect = ip_rect
+        self.username_rect = username_rect
+        self.connect_rect = connect_rect
+
+    def _handle_connection_screen_click(self, pos):
+        """Handle clicks on the connection screen."""
+        x, y = pos
+        
+        # Check which input field was clicked
+        if self.ip_rect.collidepoint(x, y):
+            self.active_input = "ip"
+        elif self.username_rect.collidepoint(x, y):
+            self.active_input = "username"
+        elif self.connect_rect.collidepoint(x, y) and not self.connecting:
+            self._attempt_connection()
+
+    def _handle_connection_screen_key(self, event):
+        """Handle keyboard input on the connection screen."""
+        if event.key == pygame.K_TAB:
+            # Switch between input fields
+            self.active_input = "username" if self.active_input == "ip" else "ip"
+        elif event.key == pygame.K_RETURN:
+            # Try to connect
+            if not self.connecting:
+                self._attempt_connection()
+        elif event.key == pygame.K_BACKSPACE:
+            # Handle backspace
+            if self.active_input == "ip":
+                self.ip_input = self.ip_input[:-1]
+            else:
+                self.username_input = self.username_input[:-1]
+        elif event.unicode.isprintable():
+            # Add character to active input
+            if self.active_input == "ip":
+                if len(self.ip_input) < 15:  # Limit IP length
+                    self.ip_input += event.unicode
+            else:
+                if len(self.username_input) < 20:  # Limit username length
+                    self.username_input += event.unicode
+
+    def _attempt_connection(self):
+        """Attempt to connect to the server with the provided credentials."""
+        if not self.username_input:
+            self.error_message = "Please enter a username"
+            return
+            
+        self.connecting = True
+        self.error_message = None
+        
+        # Start connection in a separate thread to avoid blocking the UI
+        threading.Thread(target=self._connect_to_server, daemon=True).start()
+
     def _connect_to_server(self):
         """Robust connection handling with timeout."""
-        while True:  # Keep trying until we get a valid username
+        try:
+            if self.sock:
+                self.sock.close()
+                self.sock = None
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            
+            # Use the input from the connection screen
+            server_ip = self.ip_input if self.ip_input else 'localhost'
+            self.HOST = server_ip
+            
+            print(f"[DEBUG] Attempting to connect to {self.HOST}:{self.PORT}")
             try:
-                if self.sock:
-                    self.sock.close()
-                    self.sock = None
-                self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                
-                # Get server IP address
-                server_ip = input("Enter server IP address (press Enter for localhost): ").strip()
-                if not server_ip:
-                    server_ip = 'localhost'
-                self.HOST = server_ip
-                
-                print(f"[DEBUG] Attempting to connect to {self.HOST}:{self.PORT}")
-                try:
-                    # Set a short timeout for the initial connection
-                    self.sock.settimeout(10.0)
-                    self.sock.connect((self.HOST, self.PORT))
-                    print("[DEBUG] Socket connection successful")
-                    # After connection, set a longer timeout for user input
-                    self.sock.settimeout(None)  # No timeout for user input
-                except ConnectionRefusedError:
-                    print("[ERROR] Connection refused. Is the server running?")
-                    raise
-                except socket.gaierror:
-                    print("[ERROR] Invalid IP address or hostname")
-                    raise
-                except Exception as e:
-                    print(f"[ERROR] Connection failed: {str(e)}")
-                    raise
-                
-                username = input("Enter your username: ").strip()
-                if not username:
-                    username = f"Player_{random.randint(1000,9999)}"
-                print(f"[DEBUG] Sending username: {username}")
-                # Set a timeout for the username response
+                # Set a short timeout for the initial connection
                 self.sock.settimeout(10.0)
-                self.sock.sendall(f"USERNAME:{username}\n".encode())
-                response = self._receive_line()
-                print(f"[DEBUG] Server response: {response}")
-                if response.startswith("ERROR"):
-                    print(f"[ERROR] Server rejected connection: {response[6:]}")
-                    continue
-                elif response != "OK:Username accepted":
-                    print("[ERROR] Unexpected server response")
-                    continue
-                print("[DEBUG] Connected successfully! Waiting for game data...")
-                # Store the username after successful connection
-                self.username = username
-                # Start network thread after successful connection
-                if self.network_thread is None or not self.network_thread.is_alive():
-                    self.network_thread = threading.Thread(target=self._receive_messages, daemon=True)
-                    self.network_thread.start()
-                return  # Successfully connected, exit the loop
-            except socket.timeout:
-                print("[ERROR] Connection timed out - is the server running?")
-                if self.sock:
-                    self.sock.close()
-                    self.sock = None
-                sys.exit(1)
+                self.sock.connect((self.HOST, self.PORT))
+                print("[DEBUG] Socket connection successful")
+                # After connection, set a longer timeout for user input
+                self.sock.settimeout(None)  # No timeout for user input
+            except ConnectionRefusedError:
+                self.error_message = "Connection refused. Is the server running?"
+                self.connecting = False
+                return
+            except socket.gaierror:
+                self.error_message = "Invalid IP address or hostname"
+                self.connecting = False
+                return
             except Exception as e:
-                print(f"[ERROR] Connection failed: {str(e)}")
-                if self.sock:
-                    self.sock.close()
-                    self.sock = None
-                sys.exit(1)
+                self.error_message = f"Connection failed: {str(e)}"
+                self.connecting = False
+                return
+            
+            username = self.username_input
+            print(f"[DEBUG] Sending username: {username}")
+            # Set a timeout for the username response
+            self.sock.settimeout(10.0)
+            self.sock.sendall(f"USERNAME:{username}\n".encode())
+            response = self._receive_line()
+            print(f"[DEBUG] Server response: {response}")
+            if response.startswith("ERROR"):
+                self.error_message = f"Server rejected connection: {response[6:]}"
+                self.connecting = False
+                return
+            elif response != "OK:Username accepted":
+                self.error_message = "Unexpected server response"
+                self.connecting = False
+                return
+            print("[DEBUG] Connected successfully! Waiting for game data...")
+            # Store the username after successful connection
+            self.username = username
+            # Start network thread after successful connection
+            if self.network_thread is None or not self.network_thread.is_alive():
+                self.network_thread = threading.Thread(target=self._receive_messages, daemon=True)
+                self.network_thread.start()
+            
+            # Connection successful, exit connection screen
+            self.connection_screen = False
+            self.connecting = False
+            
+        except socket.timeout:
+            self.error_message = "Connection timed out - is the server running?"
+            self.connecting = False
+        except Exception as e:
+            self.error_message = f"Connection failed: {str(e)}"
+            self.connecting = False
 
     def _receive_line(self):
         """Helper to read a complete line from socket."""
@@ -1414,7 +1548,10 @@ class ScrabbleClient:
     def run(self):
         """Main game loop."""
         print("[DEBUG] Starting main game loop")
-        self.draw_board()
+        # Draw initial connection screen
+        self._draw_connection_screen()
+        pygame.display.flip()
+        
         try:
             while self.running:
                 for event in pygame.event.get():
@@ -1422,7 +1559,9 @@ class ScrabbleClient:
                         print("[DEBUG] Received pygame.QUIT event")
                         self.running = False
                     elif event.type == pygame.MOUSEBUTTONDOWN:
-                        if not self.game_ended:  # Only handle clicks if game hasn't ended
+                        if self.connection_screen:
+                            self._handle_connection_screen_click(event.pos)
+                        elif not self.game_ended:  # Only handle clicks if game hasn't ended
                             self._handle_mouse_click(event.pos)
                     elif event.type == pygame.MOUSEBUTTONUP:
                         if not self.game_ended:  # Only handle mouse up if game hasn't ended
@@ -1434,11 +1573,23 @@ class ScrabbleClient:
                         if not self.game_ended:  # Only handle mouse wheel if game hasn't ended
                             self._handle_mouse_wheel(event.y)
                     elif event.type == pygame.KEYDOWN:
-                        self._handle_keydown(event.key)
+                        if self.connection_screen:
+                            self._handle_connection_screen_key(event)
+                        else:
+                            self._handle_keydown(event.key)
+                
                 # Auto-clear error message after 3 seconds
                 if self.error_message and pygame.time.get_ticks() - self.error_time > 3000:
                     self.error_message = None
-                self.draw_board()
+                
+                # Draw appropriate screen
+                if self.connection_screen:
+                    self._draw_connection_screen()
+                else:
+                    self.draw_board()
+                
+                # Update the display
+                pygame.display.flip()
                 self.clock.tick(60)
         except KeyboardInterrupt:
             print("\nKeyboard interrupt received, shutting down client...")
