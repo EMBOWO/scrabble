@@ -15,11 +15,17 @@ class ScrabbleClient:
     MARGIN = 40
     RACK_HEIGHT = TILE_SIZE + 20
     INFO_HEIGHT = 60
-    BUTTON_HEIGHT = 30
     BUTTON_MARGIN = 10
     PLAYER_LIST_WIDTH = 200  # Width for player list
     WIDTH = TILE_SIZE * BOARD_SIZE + MARGIN * 2 + PLAYER_LIST_WIDTH + 20  # Added width for player list
-    HEIGHT = TILE_SIZE * BOARD_SIZE + MARGIN * 2 + RACK_HEIGHT + INFO_HEIGHT + BUTTON_HEIGHT + BUTTON_MARGIN * 3 + 40  # slightly taller
+    # Calculate button dimensions
+    button_spacing = int(10 * (TILE_SIZE / 40))  # Scale spacing with tile size
+    available_width = WIDTH - (2 * MARGIN)
+    num_buttons = 6  # Total number of buttons
+    total_spacing = button_spacing * (num_buttons - 1)
+    button_width = (available_width - total_spacing) // num_buttons
+    button_height = int(button_width * 0.35)  # Always 35% of button width
+    HEIGHT = TILE_SIZE * BOARD_SIZE + MARGIN * 2 + RACK_HEIGHT + INFO_HEIGHT + button_height + BUTTON_MARGIN * 3 + 40  # slightly taller
     
     HOST = 'localhost'  # Default to localhost, will be overridden by user input
     PORT = 12345
@@ -66,7 +72,7 @@ class ScrabbleClient:
         'A': 1, 'B': 3, 'C': 3, 'D': 2, 'E': 1, 'F': 4, 'G': 2, 'H': 4,
         'I': 1, 'J': 8, 'K': 5, 'L': 1, 'M': 3, 'N': 1, 'O': 1, 'P': 3,
         'Q': 10, 'R': 1, 'S': 1, 'T': 1, 'U': 1, 'V': 4, 'W': 4, 'X': 8,
-        'Y': 4, 'Z': 10, '?': 10
+        'Y': 4, 'Z': 10, '?': 0
     }
     
     # Input field colors
@@ -84,7 +90,7 @@ class ScrabbleClient:
         self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
         pygame.display.set_caption("BAB GROUP SCRABBLE")
         
-        # Calculate scaled font sizes based on tile size
+        # Initialize fonts
         self._update_font_sizes()
         
         self.clock = pygame.time.Clock()
@@ -168,6 +174,8 @@ class ScrabbleClient:
         self.game_started = False  # Track if game has started
         self.error_time = 0  # For auto-clearing error messages
 
+        self.showing_unseen_tiles = False
+
     def _update_font_sizes(self):
         """Update font sizes based on current tile size."""
         # Base font sizes at tile size 40
@@ -177,10 +185,10 @@ class ScrabbleClient:
         # Only scale the main font used for letters and special tiles
         self.font_size = int(24 * scale_factor)  # Main font for letters and special tiles
         self.score_font_size = int(16 * scale_factor)  # Score numbers for letter tiles
+        self.button_font_size = int(30 * scale_factor)  # Button text - now scales with tile size
         
         # Fixed font sizes for other elements
         self.info_font_size = 18  # Info text
-        self.button_font_size = 20  # Button text
         self.title_font_size = 36  # Title text
         
         # Create font objects
@@ -217,45 +225,64 @@ class ScrabbleClient:
         spacing_below_error = 20  # space between error box and buttons
         button_y = (self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + 
                    self.RACK_HEIGHT + info_panel_height + spacing_above_error + error_box_height + spacing_below_error)
-        button_width = 100
-        button_spacing = 10
+        
+        # Calculate button dimensions to span full width
+        button_spacing = int(10 * (self.TILE_SIZE / 40))  # Scale spacing with tile size
+        
+        # Calculate available width (excluding margins)
+        available_width = self.WIDTH - (2 * self.MARGIN)
+        
+        # Calculate button width to fit all buttons with spacing
+        num_buttons = 6  # Total number of buttons
+        total_spacing = button_spacing * (num_buttons - 1)
+        button_width = (available_width - total_spacing) // num_buttons
+        button_height = int(button_width * 0.35)  # Always 35% of button width
+        
+        # Create buttons with calculated dimensions
         self.return_button = pygame.Rect(
             self.MARGIN, 
             button_y, 
             button_width, 
-            self.BUTTON_HEIGHT
+            button_height
         )
         self.send_button = pygame.Rect(
             self.MARGIN + button_width + button_spacing, 
             button_y, 
             button_width, 
-            self.BUTTON_HEIGHT
+            button_height
         )
         self.exchange_button = pygame.Rect(
             self.MARGIN + 2 * (button_width + button_spacing),
             button_y,
             button_width,
-            self.BUTTON_HEIGHT
+            button_height
         )
         self.ready_button = pygame.Rect(
             self.MARGIN + 3 * (button_width + button_spacing),
             button_y,
             button_width,
-            self.BUTTON_HEIGHT
+            button_height
         )
         # Add shuffle button to the right of the pass button
         self.shuffle_button = pygame.Rect(
             self.MARGIN + 3 * (button_width + button_spacing),
             button_y,
             button_width,
-            self.BUTTON_HEIGHT
+            button_height
         )
         # Add pass button to the right of the ready button
         self.pass_button = pygame.Rect(
             self.MARGIN + 4 * (button_width + button_spacing),
             button_y,
             button_width,
-            self.BUTTON_HEIGHT
+            button_height
+        )
+        # Add unseen tiles button
+        self.unseen_tiles_button = pygame.Rect(
+            self.MARGIN + 5 * (button_width + button_spacing),
+            button_y,
+            button_width,
+            button_height
         )
 
     def _draw_connection_screen(self):
@@ -519,87 +546,95 @@ class ScrabbleClient:
             try:
                 data = json.loads(message)
                 print(f"Parsed JSON data: {data}")
-                if isinstance(data, dict) and data.get("type") == "game_end":
-                    print("[DEBUG] Game end message received")
-                    with self.state_lock:  # Acquire lock for state changes
-                        print("[DEBUG] Acquired state lock for game end")
-                        self.game_ended = True
-                        print("[DEBUG] Set game_ended flag")
-                        self.final_scores = data.get("scores", {})
-                        print(f"[DEBUG] Final scores: {self.final_scores}")
-                        # Safe winner calculation
-                        if self.final_scores:
-                            try:
-                                max_score = max(self.final_scores.values())
-                                winners = [k for k, v in self.final_scores.items() if v == max_score]
-                                self.winner = winners[0] if winners else None
-                                print(f"[DEBUG] Winner determined: {self.winner}")
-                            except ValueError as e:
-                                print(f"[ERROR] Error calculating winner: {e}")
+                if isinstance(data, dict):
+                    message_type = data.get("type")
+                    if message_type == "game_end":
+                        print("[DEBUG] Game end message received")
+                        with self.state_lock:  # Acquire lock for state changes
+                            print("[DEBUG] Acquired state lock for game end")
+                            self.game_ended = True
+                            print("[DEBUG] Set game_ended flag")
+                            self.final_scores = data.get("scores", {})
+                            print(f"[DEBUG] Final scores: {self.final_scores}")
+                            # Safe winner calculation
+                            if self.final_scores:
+                                try:
+                                    max_score = max(self.final_scores.values())
+                                    winners = [k for k, v in self.final_scores.items() if v == max_score]
+                                    self.winner = winners[0] if winners else None
+                                    print(f"[DEBUG] Winner determined: {self.winner}")
+                                except ValueError as e:
+                                    print(f"[ERROR] Error calculating winner: {e}")
+                                    self.winner = None
+                            else:
+                                print("[DEBUG] No final scores available")
                                 self.winner = None
-                        else:
-                            print("[DEBUG] No final scores available")
-                            self.winner = None
-                elif isinstance(data, dict) and data.get("type") == "players":
-                    print("Received players update")
-                    self.players = data["players"]
-                    # Update game_started from server
-                    if "game_started" in data:
-                        self.game_started = data["game_started"]
-                    # Update ready state based on server data
-                    for player in self.players:
-                        if player["username"] == self.username:
-                            self.ready = player["ready"]
-                            break
-                    self.draw_player_list()
-                elif isinstance(data, dict) and data.get("type") == "move_log":
-                    print("Received move log update")
-                    self.move_log = data["moves"]
-                    self._calculate_move_log_content_height()  # Calculate height after updating moves
-                    # Scroll to bottom when new moves are added
-                    max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 30))
-                    self.move_log_scroll = max_scroll
-                elif isinstance(data, dict) and data.get("type") == "rack_update":
-                    print("Received rack update")
-                    self.tile_rack = data.get('rack', [])
-                    self.tiles_remaining = data.get('tiles_remaining', 0)
-                    print(f"Rack updated: {self.tile_rack} (Tiles remaining: {self.tiles_remaining})")
-                    # Clear buffer after successful move
-                    self.letter_buffer.clear()
-                    if hasattr(self, '_pending_buffer'):
-                        del self._pending_buffer
-                    if hasattr(self, '_pending_rack'):
-                        del self._pending_rack
-                elif isinstance(data, dict) and data.get("type") == "game_start":
-                    print("Game started!")
-                    self.game_started = True
-                    self.ready = True
-                    # Request rack update when game starts
-                    try:
-                        self.sock.sendall(b"GET_RACK")
-                    except Exception as e:
-                        print(f"Failed to request rack update: {e}")
-                elif isinstance(data, dict) and data.get("type") == "board_update":
-                    print("Received board update with blanks")
-                    # Return any buffered tiles to the rack before updating board
-                    if self.letter_buffer:
-                        print("[DEBUG] Returning buffered tiles to rack due to board update")
-                        self._return_all_letters()
-                    # Store the blank positions before any operations
-                    blank_positions = set(tuple(pos) for pos in data['blanks'])
-                    # Update the board and blank tiles before any buffer operations
-                    self.board = data['board']
-                    self.blank_tiles = blank_positions
-                    # Only clear confirmed positions from buffer
-                    self._clear_confirmed_buffer_positions()
-                    # Clear buffer after successful move
-                    self.letter_buffer.clear()
-                    if hasattr(self, '_pending_buffer'):
-                        del self._pending_buffer
-                    if hasattr(self, '_pending_rack'):
-                        del self._pending_rack
-                else:
-                    print(f"Unknown message type: {data}")
+                    elif message_type == "players":
+                        print("Received players update")
+                        self.players = data["players"]
+                        # Update game_started from server
+                        if "game_started" in data:
+                            self.game_started = data["game_started"]
+                        # Update ready state based on server data
+                        for player in self.players:
+                            if player["username"] == self.username:
+                                self.ready = player["ready"]
+                                break
+                        self.draw_player_list()
+                    elif message_type == "move_log":
+                        print("Received move log update")
+                        self.move_log = data["moves"]
+                        self._calculate_move_log_content_height()  # Calculate height after updating moves
+                        # Scroll to bottom when new moves are added
+                        max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 30))
+                        self.move_log_scroll = max_scroll
+                    elif message_type == "rack_update":
+                        print("Received rack update")
+                        self.tile_rack = data.get('rack', [])
+                        self.tiles_remaining = data.get('tiles_remaining', 0)
+                        print(f"Rack updated: {self.tile_rack} (Tiles remaining: {self.tiles_remaining})")
+                        # Clear buffer after successful move
+                        self.letter_buffer.clear()
+                        if hasattr(self, '_pending_buffer'):
+                            del self._pending_buffer
+                        if hasattr(self, '_pending_rack'):
+                            del self._pending_rack
+                    elif message_type == "tiles_remaining":
+                        print("Received tiles remaining update")
+                        self.tiles_remaining = data.get('tiles_remaining', 0)
+                        self.tile_distribution = data.get('distribution', {})
+                        print(f"Tiles remaining updated: {self.tiles_remaining}")
+                        print(f"Tile distribution: {self.tile_distribution}")
+                    elif message_type == "game_start":
+                        print("Game started!")
+                        self.game_started = True
+                        self.ready = True
+                        # Request rack update when game starts
+                        try:
+                            self.sock.sendall(b"GET_RACK\n")
+                        except Exception as e:
+                            print(f"Failed to request rack update: {e}")
+                    elif message_type == "board_update":
+                        print("Received board update with blanks")
+                        # Return any buffered tiles to the rack before updating board
+                        if self.letter_buffer:
+                            print("[DEBUG] Returning buffered tiles to rack due to board update")
+                            self._return_all_letters()
+                        # Store the blank positions before any operations
+                        blank_positions = set(tuple(pos) for pos in data['blanks'])
+                        # Update the board and blank tiles before any buffer operations
+                        self.board = data['board']
+                        self.blank_tiles = blank_positions
+                        # Only clear confirmed positions from buffer
+                        self._clear_confirmed_buffer_positions()
+                        # Clear buffer after successful move
+                        self.letter_buffer.clear()
+                        if hasattr(self, '_pending_buffer'):
+                            del self._pending_buffer
+                        if hasattr(self, '_pending_rack'):
+                            del self._pending_rack
+                    else:
+                        print(f"Unknown message type: {data}")
             except json.JSONDecodeError:
                 if message.startswith("ERROR:") or message.startswith("Error:") or message.startswith("Exchange Error:"):
                     err_msg = message.split(":", 1)[1].strip() if ":" in message else message
@@ -654,6 +689,9 @@ class ScrabbleClient:
                 # Draw blank tile dialog last, so it appears on top of everything
                 if self.showing_blank_dialog:
                     self._draw_blank_dialog()
+                # Draw unseen tiles dialog if active
+                if self.showing_unseen_tiles:
+                    self._draw_unseen_tiles_dialog()
             
             # Force update the display
             pygame.display.flip()
@@ -682,16 +720,53 @@ class ScrabbleClient:
                                   y=box_y + 20)
         self.screen.blit(title, title_rect)
         
-        # Draw winner
+        # Draw winner or draw message
         if self.winner:
-            winner_text = f"Winner: {self.winner}"
-            winner_surface = self.font.render(winner_text, True, (0, 200, 0))
-            winner_rect = winner_surface.get_rect(centerx=box_x + box_width//2,
+            # Check if there are multiple winners (draw)
+            max_score = max(self.final_scores.values())
+            winners = [k for k, v in self.final_scores.items() if v == max_score]
+            
+            if len(winners) > 1:
+                # It's a draw
+                draw_text = "It's a Draw!"
+                draw_surface = self.font.render(draw_text, True, (0, 0, 200))  # Blue color for draw
+                draw_rect = draw_surface.get_rect(centerx=box_x + box_width//2,
                                                 y=box_y + 70)
-            self.screen.blit(winner_surface, winner_rect)
+                self.screen.blit(draw_surface, draw_rect)
+                
+                # Draw "Winners:" text
+                winners_text = "Winners:"
+                winners_surface = self.font.render(winners_text, True, (0, 0, 0))
+                winners_rect = winners_surface.get_rect(centerx=box_x + box_width//2,
+                                                      y=box_y + 100)
+                self.screen.blit(winners_surface, winners_rect)
+                
+                # Draw each winner's name
+                y_offset = box_y + 130
+                for winner in winners:
+                    winner_text = f"{winner}"
+                    winner_surface = self.font.render(winner_text, True, (0, 200, 0))  # Green for winners
+                    winner_rect = winner_surface.get_rect(centerx=box_x + box_width//2,
+                                                        y=y_offset)
+                    self.screen.blit(winner_surface, winner_rect)
+                    y_offset += 30
+                
+                # Draw the winning score
+                score_text = f"Score: {max_score} points"
+                score_surface = self.font.render(score_text, True, (0, 0, 0))
+                score_rect = score_surface.get_rect(centerx=box_x + box_width//2,
+                                                  y=y_offset)
+                self.screen.blit(score_surface, score_rect)
+            else:
+                # Single winner
+                winner_text = f"Winner: {self.winner}"
+                winner_surface = self.font.render(winner_text, True, (0, 200, 0))
+                winner_rect = winner_surface.get_rect(centerx=box_x + box_width//2,
+                                                    y=box_y + 70)
+                self.screen.blit(winner_surface, winner_rect)
         
         # Draw final scores
-        y_offset = box_y + 120
+        y_offset = box_y + 120 if len(winners) <= 1 else box_y + 180
         for username, score in sorted(self.final_scores.items(), key=lambda x: x[1], reverse=True):
             score_text = f"{username}: {score} points"
             score_surface = self.font.render(score_text, True, (0, 0, 0))
@@ -732,7 +807,7 @@ class ScrabbleClient:
                     
                     # Draw score number (bottom right)
                     # Always show 0 for blank tiles
-                    score = 0 if (r, c) in self.blank_tiles else self.LETTER_VALUES.get(server_letter.upper(), 0)
+                    score = self.LETTER_VALUES.get('?') if (r, c) in self.blank_tiles else self.LETTER_VALUES.get(server_letter.upper(), 0)
                     score_text = self.score_font.render(str(score), True, (80, 80, 80))
                     score_rect = score_text.get_rect(bottomright=(x + self.TILE_SIZE - 3, y + self.TILE_SIZE - 2))
                     self.screen.blit(score_text, score_rect)
@@ -751,7 +826,7 @@ class ScrabbleClient:
                     
                     # Draw score number (bottom right)
                     # Always show 0 for blank tiles
-                    score = 0 if (r, c) in self.blank_tiles else self.LETTER_VALUES.get(buffer_letter.upper(), 0)
+                    score = self.LETTER_VALUES.get('?') if (r, c) in self.blank_tiles else self.LETTER_VALUES.get(buffer_letter.upper(), 0)
                     score_text = self.score_font.render(str(score), True, (80, 80, 80))
                     score_rect = score_text.get_rect(bottomright=(x + self.TILE_SIZE - 3, y + self.TILE_SIZE - 2))
                     self.screen.blit(score_text, score_rect)
@@ -812,9 +887,9 @@ class ScrabbleClient:
                     # Draw ghost score number
                     if self.dragging_from_board:
                         row, col = self.drag_board_pos
-                        score = 0 if (row, col) in self.blank_tiles else self.LETTER_VALUES.get(letter.upper(), 0)
+                        score = self.LETTER_VALUES.get('?') if (row, col) in self.blank_tiles else self.LETTER_VALUES.get(letter.upper(), 0)
                     else:
-                        score = 0 if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
+                        score = self.LETTER_VALUES.get('?') if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
                     
                     score_font = pygame.font.SysFont(None, 16)
                     score_text = score_font.render(str(score), True, (80, 80, 80))
@@ -850,9 +925,9 @@ class ScrabbleClient:
             # Draw score number
             if self.dragging_from_board:
                 row, col = self.drag_board_pos
-                score = 0 if (row, col) in self.blank_tiles else self.LETTER_VALUES.get(letter.upper(), 0)
+                score = self.LETTER_VALUES.get('?') if (row, col) in self.blank_tiles else self.LETTER_VALUES.get(letter.upper(), 0)
             else:
-                score = 0 if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
+                score = self.LETTER_VALUES.get('?') if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
             
             score_font = pygame.font.SysFont(None, 16)
             score_text = score_font.render(str(score), True, (80, 80, 80))
@@ -1029,7 +1104,7 @@ class ScrabbleClient:
 
             # Draw score number (bottom right)
             # Always show 0 for blank tiles
-            score = 0 if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
+            score = self.LETTER_VALUES.get('?') if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
             score_text = self.score_font.render(str(score), True, (80, 80, 80))
             score_rect = score_text.get_rect(bottomright=(x + self.TILE_SIZE - 3, rack_y + self.TILE_SIZE - 2))
             self.screen.blit(score_text, score_rect)
@@ -1061,9 +1136,9 @@ class ScrabbleClient:
             # Draw score number
             if self.dragging_from_board:
                 row, col = self.drag_board_pos
-                score = 0 if (row, col) in self.blank_tiles else self.LETTER_VALUES.get(letter.upper(), 0)
+                score = self.LETTER_VALUES.get('?') if (row, col) in self.blank_tiles else self.LETTER_VALUES.get(letter.upper(), 0)
             else:
-                score = 0 if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
+                score = self.LETTER_VALUES.get('?') if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
             
             score_font = pygame.font.SysFont(None, 16)
             score_text = score_font.render(str(score), True, (80, 80, 80))
@@ -1252,6 +1327,26 @@ class ScrabbleClient:
             rest_text = self.button_font.render(shuffle_text[1:], True, (0, 0, 0))
             # Draw first letter with underline
             first_rect = first_letter.get_rect(midleft=self.shuffle_button.midleft)
+            first_rect.x += 10  # Add some padding
+            self.screen.blit(first_letter, first_rect)
+            pygame.draw.line(self.screen, (0, 0, 0), 
+                            (first_rect.left, first_rect.bottom),
+                            (first_rect.right, first_rect.bottom), 2)
+            # Draw rest of text
+            rest_rect = rest_text.get_rect(midleft=first_rect.midright)
+            self.screen.blit(rest_text, rest_rect)
+
+        # Unseen tiles button (only if game started and player is ready)
+        if self.game_started and self.ready and not self.game_ended:
+            unseen_color = (255, 200, 255)  # Light purple
+            pygame.draw.rect(self.screen, unseen_color, self.unseen_tiles_button)
+            pygame.draw.rect(self.screen, (0, 0, 0), self.unseen_tiles_button, 2)
+            # Split text to make first letter bold and underlined
+            unseen_text = "Unseen"
+            first_letter = self.button_font.render(unseen_text[0], True, (0, 0, 0))
+            rest_text = self.button_font.render(unseen_text[1:], True, (0, 0, 0))
+            # Draw first letter with underline
+            first_rect = first_letter.get_rect(midleft=self.unseen_tiles_button.midleft)
             first_rect.x += 10  # Add some padding
             self.screen.blit(first_letter, first_rect)
             pygame.draw.line(self.screen, (0, 0, 0), 
@@ -1527,15 +1622,31 @@ class ScrabbleClient:
         try:
             message = "READY" if ready else "UNREADY"
             self.sock.sendall(f"{message}\n".encode())
-            self.ready = ready
+            # Don't set local ready state - wait for server confirmation
         except Exception as e:
             print(f"Failed to send {message}: {e}")
-            self.ready = False  # Reset ready state if send fails
+            self._set_error(f"Failed to send {message}: {e}")
 
     def _handle_mouse_click(self, pos):
         """Handle mouse click events."""
         x, y = pos
-        # Try button clicks first
+        
+        # If showing blank dialog, only handle clicks within the dialog
+        if self.showing_blank_dialog:
+            if not self.blank_dialog_cancel_button.collidepoint(x, y):
+                return
+            
+        # If showing unseen tiles dialog, only handle clicks within the dialog
+        if self.showing_unseen_tiles:
+            if not self.unseen_tiles_button.collidepoint(x, y) and not self.unseen_tiles_close_button.collidepoint(x, y):
+                return
+            
+        # Handle connection screen clicks
+        if not self.sock:
+            self._handle_connection_screen_click(pos)
+            return
+            
+        # Handle button clicks
         if self._handle_button_click(x, y):
             return
         # Try rack click
@@ -1585,6 +1696,19 @@ class ScrabbleClient:
         elif self.shuffle_button.collidepoint(x, y):
             if self.game_started and not self.game_ended:
                 random.shuffle(self.tile_rack)
+            return True
+        elif self.unseen_tiles_button.collidepoint(x, y):
+            if self.game_started and self.ready and not self.game_ended:
+                self.showing_unseen_tiles = not self.showing_unseen_tiles
+            return True
+        elif hasattr(self, 'unseen_tiles_close_button') and self.unseen_tiles_close_button.collidepoint(x, y):
+            self.showing_unseen_tiles = False
+            return True
+        elif hasattr(self, 'blank_dialog_cancel_button') and self.blank_dialog_cancel_button.collidepoint(x, y):
+            self.showing_blank_dialog = False
+            # Return the blank tile to the rack
+            self.tile_rack.append('?')
+            self.blank_pos = None
             return True
         return False
 
@@ -1772,6 +1896,11 @@ class ScrabbleClient:
                 self.blank_pos = None
             return
             
+        # Handle ESC for unseen tiles dialog
+        if key == pygame.K_ESCAPE and self.showing_unseen_tiles:
+            self.showing_unseen_tiles = False
+            return
+            
         # Handle button shortcuts (only if blank dialog is not showing)
         if not self.showing_blank_dialog:
             if key == pygame.K_r:  # Ready
@@ -1793,6 +1922,9 @@ class ScrabbleClient:
             elif key == pygame.K_s:  # Shuffle
                 if self.game_started and self.ready and not self.game_ended:
                     random.shuffle(self.tile_rack)
+            elif key == pygame.K_u:  # Unseen Tiles
+                if self.game_started and self.ready and not self.game_ended:
+                    self.showing_unseen_tiles = not self.showing_unseen_tiles
 
         if key == pygame.K_ESCAPE:
             # Cancel selection with ESC
@@ -1815,9 +1947,22 @@ class ScrabbleClient:
             self.TILE_SIZE = new_size
             # Update dependent measurements
             self.RACK_HEIGHT = self.TILE_SIZE + 20
+        
+            # Calculate button dimensions to span full width
+            button_spacing = int(10 * (self.TILE_SIZE / 40))  # Scale spacing with tile size
+            
+            # Calculate available width (excluding margins)
+            available_width = self.WIDTH - (2 * self.MARGIN)
+            
+            # Calculate button width to fit all buttons with spacing
+            num_buttons = 6  # Total number of buttons
+            total_spacing = button_spacing * (num_buttons - 1)
+            button_width = (available_width - total_spacing) // num_buttons
+            button_height = int(button_width * 0.35)  # Always 35% of button width
+
             self.WIDTH = self.TILE_SIZE * self.BOARD_SIZE + self.MARGIN * 2 + self.PLAYER_LIST_WIDTH + 20
             self.HEIGHT = (self.TILE_SIZE * self.BOARD_SIZE + self.MARGIN * 2 + 
-                          self.RACK_HEIGHT + self.INFO_HEIGHT + self.BUTTON_HEIGHT + 
+                          self.RACK_HEIGHT + self.INFO_HEIGHT + button_height + 
                           self.BUTTON_MARGIN * 3 + 40)
             
             # Resize the window
@@ -2378,13 +2523,13 @@ class ScrabbleClient:
             # Check if this is a blank tile
             is_blank = (row, col) in temp_blanks
             # Always score 0 for blank tiles
-            letter_score = 0 if is_blank else self.LETTER_VALUES.get(letter.upper(), 0)
+            letter_score = self.LETTER_VALUES.get('?') if is_blank else self.LETTER_VALUES.get(letter.upper(), 0)
             square_type = self.special_tiles[row][col]
             
             # Check if this is a new tile (part of the current buffer)
             is_new_tile = (row, col) in self.letter_buffer
             
-            if is_new_tile:  # Only apply letter multipliers to new non-blank tiles
+            if is_new_tile:  # Only apply letter multipliers to new tiles
                 # Apply letter multipliers only to new tiles
                 if square_type == 'DL':
                     letter_score *= 2
@@ -2435,7 +2580,7 @@ class ScrabbleClient:
         
         # Draw dialog box
         dialog_width = 300
-        dialog_height = 150
+        dialog_height = 200  # Increased height to accommodate buttons
         dialog_x = (self.WIDTH - dialog_width) // 2
         dialog_y = (self.HEIGHT - dialog_height) // 2
         
@@ -2444,16 +2589,132 @@ class ScrabbleClient:
         pygame.draw.rect(self.screen, (0, 0, 0), 
                        (dialog_x, dialog_y, dialog_width, dialog_height), 2)
         
+        # Create fixed-size fonts for the dialog
+        title_font = pygame.font.SysFont(None, 24)  # Fixed size for title
+        letter_font = pygame.font.SysFont(None, 28)  # Font for blank tile letter
+        value_font = pygame.font.SysFont(None, 16)  # Font for tile value
+        button_font = pygame.font.SysFont(None, 20) # Fixed size for button text
+        
         # Draw instructions
-        text = self.font.render("Type a letter for the blank tile", True, (0, 0, 0))
+        text = title_font.render("Type a letter for the blank tile", True, (0, 0, 0))
         text_rect = text.get_rect(centerx=dialog_x + dialog_width//2, 
                                 y=dialog_y + 20)
         self.screen.blit(text, text_rect)
         
-        text = self.info_font.render("(Press ESC to cancel)", True, (100, 100, 100))
-        text_rect = text.get_rect(centerx=dialog_x + dialog_width//2, 
-                                y=dialog_y + 50)
-        self.screen.blit(text, text_rect)
+        # Draw blank tile
+        tile_size = 40
+        tile_x = dialog_x + (dialog_width - tile_size) // 2
+        tile_y = dialog_y + 50
+        
+        # Draw tile background
+        pygame.draw.rect(self.screen, (128, 0, 128), (tile_x, tile_y, tile_size, tile_size))  # Purple background
+        pygame.draw.rect(self.screen, (0, 0, 0), (tile_x, tile_y, tile_size, tile_size), 2)
+        
+        # Draw question mark in white
+        question_mark = letter_font.render("?", True, (255, 255, 255))
+        question_rect = question_mark.get_rect(center=(tile_x + tile_size//2, tile_y + tile_size//2))
+        self.screen.blit(question_mark, question_rect)
+        
+        # Draw point value (0) in white
+        value_text = value_font.render(str(self.LETTER_VALUES.get('?')), True, (255, 255, 255))
+        value_rect = value_text.get_rect(bottomright=(tile_x + tile_size - 3, tile_y + tile_size - 2))
+        self.screen.blit(value_text, value_rect)
+
+        # Draw cancel button
+        cancel_button = pygame.Rect(dialog_x + (dialog_width - 100) // 2,
+                                  dialog_y + dialog_height - 50,
+                                  100, 30)
+        pygame.draw.rect(self.screen, (200, 200, 200), cancel_button)
+        pygame.draw.rect(self.screen, (0, 0, 0), cancel_button, 2)
+        
+        cancel_text = button_font.render("Cancel", True, (0, 0, 0))
+        cancel_rect = cancel_text.get_rect(center=cancel_button.center)
+        self.screen.blit(cancel_text, cancel_rect)
+
+        # Store button rectangle for click detection
+        self.blank_dialog_cancel_button = cancel_button
+
+    def _draw_unseen_tiles_dialog(self):
+        """Draw the dialog showing unseen tiles."""
+        if not self.showing_unseen_tiles:
+            return
+
+        # Calculate dialog dimensions
+        dialog_width = 400
+        dialog_height = 300
+        dialog_x = (self.WIDTH - dialog_width) // 2
+        dialog_y = (self.HEIGHT - dialog_height) // 2
+
+        # Draw dialog background
+        pygame.draw.rect(self.screen, (255, 255, 255), (dialog_x, dialog_y, dialog_width, dialog_height))
+        pygame.draw.rect(self.screen, (0, 0, 0), (dialog_x, dialog_y, dialog_width, dialog_height), 2)
+
+        # Draw title
+        title_font = pygame.font.SysFont('Arial', 24, bold=True)
+        title_text = title_font.render("Unseen Tiles", True, (0, 0, 0))
+        title_rect = title_text.get_rect(centerx=dialog_x + dialog_width//2, y=dialog_y + 20)
+        self.screen.blit(title_text, title_rect)
+
+        # Draw close button
+        close_button_rect = pygame.Rect(dialog_x + dialog_width - 100, dialog_y + dialog_height - 40, 80, 30)
+        pygame.draw.rect(self.screen, (200, 200, 200), close_button_rect)
+        pygame.draw.rect(self.screen, (0, 0, 0), close_button_rect, 1)
+        close_font = pygame.font.SysFont('Arial', 20, bold=True)
+        close_text = close_font.render("Close", True, (0, 0, 0))
+        close_text_rect = close_text.get_rect(center=close_button_rect.center)
+        self.screen.blit(close_text, close_text_rect)
+
+        # Draw tile distribution in a grid
+        if hasattr(self, 'tile_distribution'):
+            # Create a copy of the distribution and subtract tiles in rack
+            available_tiles = dict(self.tile_distribution)
+            for tile in self.tile_rack:
+                if tile in available_tiles:
+                    available_tiles[tile] = max(0, available_tiles[tile] - 1)
+
+            # Create fonts for letter and count
+            letter_font = pygame.font.SysFont('Arial', 20)  # Standard letter font
+            value_font = pygame.font.SysFont('Arial', 12)  # Small font for tile values
+            count_font = pygame.font.SysFont('Arial', 16)  # Font for count numbers
+            
+            tile_size = 35  # Reduced tile size
+            spacing = 8  # Reduced spacing
+            tiles_per_row = 9  # Increased tiles per row
+            x_start = dialog_x + (dialog_width - (tiles_per_row * (tile_size + spacing) - spacing)) // 2  # Center the grid
+            y_start = dialog_y + 60
+
+            # Sort tiles by letter
+            sorted_tiles = sorted(available_tiles.items(), key=lambda x: x[0])
+
+            for i, (tile, count) in enumerate(sorted_tiles):
+                if count > 0:  # Only show tiles that are still available
+                    row = i // tiles_per_row
+                    col = i % tiles_per_row
+                    x = x_start + col * (tile_size + spacing)
+                    y = y_start + row * (tile_size + spacing + 20)
+
+                    # Draw tile background
+                    pygame.draw.rect(self.screen, (200, 200, 200), (x, y, tile_size, tile_size))
+                    pygame.draw.rect(self.screen, (0, 0, 0), (x, y, tile_size, tile_size), 1)
+
+                    # Draw tile letter
+                    letter_text = letter_font.render(tile, True, (0, 0, 0))
+                    letter_rect = letter_text.get_rect(center=(x + tile_size//2, y + tile_size//2))
+                    self.screen.blit(letter_text, letter_rect)
+
+                    # Draw tile value (gray)
+                    value = self.LETTER_VALUES.get(tile.upper(), 0)
+                    value_text = value_font.render(str(value), True, (80, 80, 80))
+                    value_rect = value_text.get_rect(bottomright=(x + tile_size - 3, y + tile_size - 2))
+                    self.screen.blit(value_text, value_rect)
+
+                    # Draw count below tile (blue)
+                    count_text = count_font.render(str(count), True, (0, 0, 255))
+                    count_rect = count_text.get_rect(center=(x + tile_size//2, y + tile_size + 10))
+                    self.screen.blit(count_text, count_rect)
+
+        # Store close button rect for click detection
+        self.unseen_tiles_close_button = close_button_rect
 
 def main():
     """Entry point for the application."""

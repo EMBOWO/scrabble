@@ -33,7 +33,7 @@ class ScrabbleServer:
     #     'A': 0, 'B': 0, 'C': 0, 'D': 1, 'E': 0, 'F': 0, 'G': 0, 'H': 0,
     #     'I': 0, 'J': 0, 'K': 0, 'L': 0, 'M': 0, 'N': 0, 'O': 0, 'P': 0,
     #     'Q': 0, 'R': 0, 'S': 0, 'T': 0, 'U': 0, 'V': 0, 'W': 0, 'X': 0,
-    #     'Y': 0, 'Z': 0, '?': 8  # * represents blank tiles
+    #     'Y': 0, 'Z': 0, '?': 20  # * represents blank tiles
     # }
 
     # Add these class constants after the existing ones
@@ -142,6 +142,7 @@ class ScrabbleServer:
             current_rack.extend(new_tiles)
             self.player_racks[username] = current_rack
             print(f"[RACK] {username} received {len(new_tiles)} tiles: {new_tiles}")
+            self._broadcast_tiles_remaining()  # Broadcast tiles remaining after drawing
             return new_tiles
         return []
 
@@ -188,7 +189,7 @@ class ScrabbleServer:
                     "username": username,
                     "points": self.player_points[username],
                     "current_turn": (username == self.current_turn),
-                    "ready": self.player_ready.get(username, False)
+                    "ready": self.player_ready.get(username, False),
                 }
                 for username in self.turn_order
             ]
@@ -428,7 +429,7 @@ class ScrabbleServer:
             # Check if this is a blank tile
             is_blank = (row, col) in temp_blanks
             # Always score 0 for blank tiles
-            letter_score = 0 if is_blank else self._get_letter_value(letter)
+            letter_score = self._get_letter_value('?') if is_blank else self._get_letter_value(letter)
             square_type = self._get_square_type(row, col)
             
             # Check if this is a new tile (part of the current move)
@@ -482,6 +483,28 @@ class ScrabbleServer:
                     print(f"[DEBUG] Word score for '{word}': {word_score}, Total: {total_score}")  # Debug log
         
         return total_score
+
+    def _get_tile_distribution(self):
+        """Get the current distribution of tiles in the bag and players' racks."""
+        with self.bag_lock:
+            # Start with tiles in the bag
+            distribution = dict(Counter(self.tile_bag))
+            
+            # Add tiles from all players' racks
+            for rack in self.player_racks.values():
+                for tile in rack:
+                    distribution[tile] = distribution.get(tile, 0) + 1
+            
+            return distribution
+
+    def _broadcast_tiles_remaining(self):
+        """Broadcast the current number of tiles remaining and their distribution to all players."""
+        tiles_data = {
+            'type': 'tiles_remaining',
+            'tiles_remaining': self._get_tiles_remaining(),
+            'distribution': self._get_tile_distribution()
+        }
+        self._broadcast_message(tiles_data)
 
     def _process_batch_move(self, conn, batch_data):
         """Process multiple moves in one batch, enforcing turn order."""
@@ -669,6 +692,7 @@ class ScrabbleServer:
             print("[DEBUG] Broadcasting final state")
             self._broadcast_player_list()
             self._broadcast_move_log()
+            self._broadcast_tiles_remaining()  # Broadcast tiles remaining after returning tiles
             
             # Send game end message to all clients
             end_message = {
@@ -772,7 +796,8 @@ class ScrabbleServer:
             # Send updated rack and broadcast player list
             self._send_rack_update(conn)
             self._broadcast_player_list()
-            self._broadcast_move_log()  # Broadcast the updated move log
+            self._broadcast_move_log()
+            self._broadcast_tiles_remaining()  # Broadcast tiles remaining after exchange
             
             print(f"[EXCHANGE] {username} exchanged {len(tiles_to_exchange)} tiles")
             
@@ -966,7 +991,7 @@ class ScrabbleServer:
             'A': 1, 'B': 3, 'C': 3, 'D': 2, 'E': 1, 'F': 4, 'G': 2, 'H': 4,
             'I': 1, 'J': 8, 'K': 5, 'L': 1, 'M': 3, 'N': 1, 'O': 1, 'P': 3,
             'Q': 10, 'R': 1, 'S': 1, 'T': 1, 'U': 1, 'V': 4, 'W': 4, 'X': 8,
-            'Y': 4, 'Z': 10, '?': 10
+            'Y': 4, 'Z': 10, '?': 0
         }
         return values.get(char.upper(), 0)
 
@@ -1237,12 +1262,19 @@ class ScrabbleServer:
 
     def _start_game(self):
         """Initialize the game state when all players are ready."""
+        print("[DEBUG] Starting game initialization")
+        # First broadcast game start message
+        self._broadcast_message({"type": "game_start"})
+        # Then set game started flag
         self.game_started = True
+        print("[DEBUG] Game started flag set")
         # Fill racks for all players when game starts
         with self.client_lock:
-            for client in self.clients:
-                self._fill_rack(client)
-        self._broadcast_message({"type": "game_start"})
+            clients_copy = self.clients[:]  # Create a copy of clients list
+        # Fill racks outside the client lock to avoid deadlock
+        for client in clients_copy:
+            self._fill_rack(client)
+        print("[DEBUG] Game initialization complete")
 
 
 def main():
