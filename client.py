@@ -217,35 +217,47 @@ class ScrabbleClient:
                     server_ip = 'localhost'
                 self.HOST = server_ip
                 
-                print(f"Connecting to server at {self.HOST}:{self.PORT}...")
-                self.sock.connect((self.HOST, self.PORT))
+                print(f"[DEBUG] Attempting to connect to {self.HOST}:{self.PORT}")
+                try:
+                    self.sock.connect((self.HOST, self.PORT))
+                    print("[DEBUG] Socket connection successful")
+                except ConnectionRefusedError:
+                    print("[ERROR] Connection refused. Is the server running?")
+                    raise
+                except socket.gaierror:
+                    print("[ERROR] Invalid IP address or hostname")
+                    raise
+                except Exception as e:
+                    print(f"[ERROR] Connection failed: {str(e)}")
+                    raise
                 
                 username = input("Enter your username: ").strip()
                 if not username:
                     username = f"Player_{random.randint(1000,9999)}"
+                print(f"[DEBUG] Sending username: {username}")
                 self.sock.sendall(f"USERNAME:{username}\n".encode())
                 response = self._receive_line()
-                print(f"Server response: {response}")
+                print(f"[DEBUG] Server response: {response}")
                 if response.startswith("ERROR"):
-                    print(f"Server rejected connection: {response[6:]}")
+                    print(f"[ERROR] Server rejected connection: {response[6:]}")
                     continue
                 elif response != "OK:Username accepted":
-                    print("Unexpected server response")
+                    print("[ERROR] Unexpected server response")
                     continue
-                print("Connected successfully! Waiting for game data...")
+                print("[DEBUG] Connected successfully! Waiting for game data...")
                 # Start network thread after successful connection
                 if self.network_thread is None or not self.network_thread.is_alive():
                     self.network_thread = threading.Thread(target=self._receive_messages, daemon=True)
                     self.network_thread.start()
                 return  # Successfully connected, exit the loop
             except socket.timeout:
-                print("Connection timed out - is the server running?")
+                print("[ERROR] Connection timed out - is the server running?")
                 if self.sock:
                     self.sock.close()
                     self.sock = None
                 sys.exit(1)
             except Exception as e:
-                print(f"Connection failed: {str(e)}")
+                print(f"[ERROR] Connection failed: {str(e)}")
                 if self.sock:
                     self.sock.close()
                     self.sock = None
