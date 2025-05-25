@@ -415,88 +415,17 @@ class ScrabbleServer:
                 return square_type
         return None
 
-    def _calculate_word_score(self, word, new_positions, temp_board=None, temp_blanks=None):
+    def _calculate_word_score(self, word_positions, new_positions, temp_board=None, temp_blanks=None):
+        """Calculate score for a word given its exact positions."""
         word_score = 0
         word_mult = 1
-        word_positions = []
-        tiles_used = len(new_positions)
-        
-        # Find the word in the temporary board by only checking positions adjacent to new tiles
-        found = False
-        
-        # Get all positions to check (new positions and their adjacent positions)
-        positions_to_check = set()
-        for row, col in new_positions:
-            # Add adjacent positions (up, down, left, right)
-            positions_to_check.add((row-1, col))  # up
-            positions_to_check.add((row+1, col))  # down
-            positions_to_check.add((row, col-1))  # left
-            positions_to_check.add((row, col+1))  # right
-            positions_to_check.add((row, col))    # the position itself
-        
-        # Filter out invalid positions
-        positions_to_check = {(r, c) for r, c in positions_to_check 
-                            if 0 <= r < self.BOARD_SIZE and 0 <= c < self.BOARD_SIZE}
-        
-        # Check horizontal words first
-        for row, col in positions_to_check:
-            if temp_board[row][col] != '':
-                # Get the word at this position
-                current_word = []
-                positions = []
-                # Look left
-                c = col
-                while c >= 0 and temp_board[row][c] != '':
-                    current_word.insert(0, temp_board[row][c])
-                    positions.insert(0, (row, c))
-                    c -= 1
-                # Look right
-                c = col + 1
-                while c < self.BOARD_SIZE and temp_board[row][c] != '':
-                    current_word.append(temp_board[row][c])
-                    positions.append((row, c))
-                    c += 1
-                if ''.join(current_word) == word:
-                    word_positions = positions
-                    found = True
-                    break
-        
-        # If not found horizontally, check vertical
-        if not found:
-            for row, col in positions_to_check:
-                if temp_board[row][col] != '':
-                    # Get the word at this position
-                    current_word = []
-                    positions = []
-                    # Look up
-                    r = row
-                    while r >= 0 and temp_board[r][col] != '':
-                        current_word.insert(0, temp_board[r][col])
-                        positions.insert(0, (r, col))
-                        r -= 1
-                    # Look down
-                    r = row + 1
-                    while r < self.BOARD_SIZE and temp_board[r][col] != '':
-                        current_word.append(temp_board[r][col])
-                        positions.append((r, col))
-                        r += 1
-                    if ''.join(current_word) == word:
-                        word_positions = positions
-                        found = True
-                        break
-        
-        print(f"[DEBUG] Word '{word}' positions: {word_positions}")  # Debug log
-        # Skip words that don't contain any newly played tiles
-        if not any(pos in new_positions for pos in word_positions):
-            print(f"[DEBUG] Skipping word '{word}' as it contains no new tiles")
-            return None
         
         # Check if this is the primary word (contains all new moves)
-        is_primary_word = all(any(r == row and c == col for row, col in word_positions) for r, c in new_positions)
+        is_primary_word = all(pos in word_positions for pos in new_positions)
         
         # Calculate score for this word
         for row, col in word_positions:
-            letter = temp_board[row][col]  # Use temp_board to get the correct letter
+            letter = temp_board[row][col]
             # Check if this is a blank tile
             is_blank = (row, col) in temp_blanks
             # Always score 0 for blank tiles
@@ -506,8 +435,6 @@ class ScrabbleServer:
             # Check if this is a new tile (part of the current move)
             is_new_tile = (row, col) in new_positions
             
-            print(f"[DEBUG] Letter {letter} at ({row},{col}): base={letter_score}, square={square_type}, new={is_new_tile}, is_blank={is_blank}")  # Debug log
-            
             if is_new_tile:
                 # Apply letter multipliers only to new tiles
                 if square_type == 'DL':
@@ -515,59 +442,46 @@ class ScrabbleServer:
                 elif square_type == 'TL':
                     letter_score *= 3
                 # Apply word multipliers to all tiles
-                if square_type == 'DW':
+                if square_type == 'DW' or square_type == '*':  # Center star is also double word
                     word_mult *= 2
                 elif square_type == 'TW':
                     word_mult *= 3
             
             word_score += letter_score
-            print(f"[DEBUG] Running word score: {word_score}")  # Debug log
         
         # Apply word multiplier
         word_score *= word_mult
-            
+        
         # Add bingo bonus (50 points) only for primary words that use all 7 tiles
-        if is_primary_word and tiles_used == 7:
+        if is_primary_word and len(new_positions) == 7:
             word_score += 50
-            print("[DEBUG] Added bingo bonus of 50 points")  # Debug log
+            
         return word_score
 
     def _calculate_words_score(self, moves, blank_positions=None):
-        """Calculate the score for a word, including special squares and bingo bonus."""
+        """Calculate the total score for all words created by a move."""
         total_score = 0
-        
-        # Get all words created by this play
-        words = self._get_all_words(moves)
-        print(f"[DEBUG] Words created: {words}")  # Debug log
-        
-        # Create a temporary board with the moves
+        new_positions = [(row, col) for row, col, _ in moves]
         temp_board = [row[:] for row in self.board]
-        temp_blanks = self.board_blanks.copy()  # Copy current blank positions
+        temp_blanks = set(blank_positions) if blank_positions else set()
         
-        # Create a set of positions that were just played
-        new_positions = {(row, col) for row, col, _ in moves}
+        # Add new moves to temporary board
+        for row, col, letter in moves:
+            temp_board[row][col] = letter
         
-        # Add client's blank positions to temp_blanks
-        if blank_positions:
-            temp_blanks.update(blank_positions)
-            print(f"[DEBUG] Added client blank positions: {blank_positions}")  # Debug log
+        # Get all words created by this move
+        words = self._get_all_words(moves)
         
-        # Add new moves to temp board and track new blank positions
-        for row, col, char in moves:
-            temp_board[row][col] = char
-            # If this position was in the original blank_positions, add it to temp_blanks
-            if (row, col) in self.board_blanks:
-                temp_blanks.add((row, col))
-        
-        # Calculate score for each word
+        # Calculate score for each word using the stored positions
         for word in words:
-            word_score = self._calculate_word_score(word, new_positions, temp_board, temp_blanks)
-            if word_score is None:
-                continue
-            print(f"[DEBUG] Final word score for '{word}': {word_score}")  # Debug log
-            total_score += word_score
+            # Get positions for this word from the stored positions
+            word_positions_list = self._current_word_positions.get(word, [])
+            for word_positions in word_positions_list:
+                word_score = self._calculate_word_score(word_positions, new_positions, temp_board, temp_blanks)
+                if word_score is not None:
+                    total_score += word_score
+                    print(f"[DEBUG] Word score for '{word}': {word_score}, Total: {total_score}")  # Debug log
         
-        print(f"[DEBUG] Total score for play: {total_score}")  # Debug log
         return total_score
 
     def _process_batch_move(self, conn, batch_data):
@@ -861,117 +775,75 @@ class ScrabbleServer:
             conn.sendall(error_msg.encode())
 
     def _handle_client(self, conn, addr):
-        """Handle a client connection."""
+        """Main client handler loop."""
         print(f"[CONNECTION] From {addr}")
+        username = None
         try:
-            # Set socket timeout
-            try:
-                conn.settimeout(self.SOCKET_TIMEOUT)
-            except OSError as e:
-                print(f"[ERROR] Failed to set socket timeout for {addr}: {e}")
-                return
-
-            # Get username
-            username = self._get_username(conn)
-            if not username:
-                print(f"[ERROR] Failed to get username from {addr}")
-                return
-
-            # Add client to game
-            if not self._add_client(conn):
-                print(f"[ERROR] Failed to add client {username} to game")
-                return
-
-            # Send initial game state
-            try:
-                self._send_initial_data(conn)
-            except Exception as e:
-                print(f"[ERROR] Failed to send initial data to {username}: {e}")
-                self._remove_client(conn)
-                return
-
-            # Main client handling loop
-            while True:
+            self._add_client(conn)
+            fileno = conn.fileno()
+            username = self.client_usernames.get(fileno)
+            self._send_initial_data(conn)
+            conn.settimeout(1.0)
+            while self.running:
                 try:
-                    # Get message from client
-                    message = self._receive_line(conn)
-                    if not message:
-                        print(f"[DISCONNECT] Client {username} disconnected")
+                    data = conn.recv(1024).decode().strip()
+                    if not data:
+                        print(f"[DISCONNECT] Client {username or addr} disconnected (no data)")
                         break
-
-                    # Handle different message types
-                    if message == "READY":
-                        if username in self.clients:
-                            self.clients[username]["ready"] = True
-                            print(f"[READY] {username} is ready")
+                    try:
+                        if data == "DISCONNECT":
+                            print(f"[DISCONNECT] Client {username or addr} requested disconnect")
+                            break
+                        elif data == "READY":
+                            self.player_ready[username] = True
                             self._broadcast_player_list()
-                            # Check if all clients are ready
-                            if all(client["ready"] for client in self.clients.values()):
-                                print("[GAME] All players ready, starting game")
+                            if all(self.player_ready.get(u, False) for u in self.turn_order):
                                 self.game_started = True
-                                # Distribute tiles to all players
-                                for client in self.clients.values():
-                                    self._fill_rack(client["conn"])
-                                self._broadcast_player_list()
-                                self._broadcast_board()
-                                # Set first player's turn
-                                if self.clients:
-                                    first_player = next(iter(self.clients))
-                                    self.clients[first_player]["current_turn"] = True
-                                    self._broadcast_player_list()
-
-                    elif message == "PASS":
-                        if not self.game_started:
-                            print(f"[ERROR] {username} tried to pass before game started")
-                            continue
-                        self._handle_pass(conn)
-
-                    elif message.startswith("DRAW:"):
-                        if not self.game_started:
-                            print(f"[ERROR] {username} tried to draw before game started")
-                            continue
-                        count_str = message[5:]
-                        self._handle_draw_request(conn, count_str)
-
-                    elif message.startswith("EXCHANGE:"):
-                        if not self.game_started:
-                            print(f"[ERROR] {username} tried to exchange before game started")
-                            continue
-                        tiles_str = message[9:]
-                        self._handle_exchange_request(conn, tiles_str)
-
-                    elif message == "GET_RACK":
-                        if not self.game_started:
-                            print(f"[ERROR] {username} tried to get rack before game started")
-                            continue
-                        self._send_rack_update(conn)
-
-                    elif message == "DISCONNECT":
-                        print(f"[DISCONNECT] {username} requested disconnect")
-                        break
-
-                    else:
-                        # Assume it's a move
-                        if not self.game_started:
-                            print(f"[ERROR] {username} tried to make a move before game started")
-                            continue
-                        self._process_batch_move(conn, message)
-
+                                # Fill racks for all players when game starts
+                                with self.client_lock:
+                                    for client in self.clients:
+                                        self._fill_rack(client)
+                                self._broadcast_message({"type": "game_start"})
+                        # Block all other actions before game start
+                        elif not self.game_started:
+                            if data == 'GET_RACK':
+                                self._send_rack_update(conn)
+                            else:
+                                conn.sendall("ERROR:Game has not started yet. Wait for all players to be ready.\n".encode())
+                        elif data == "PASS":
+                            self._handle_pass(conn)
+                        elif data.startswith('DRAW:'):
+                            self._handle_draw_request(conn, data[5:])
+                        elif data.startswith('EXCHANGE:'):
+                            self._handle_exchange_request(conn, data[9:])
+                        elif data == 'GET_RACK':
+                            self._send_rack_update(conn)
+                        elif ';' in data:
+                            self._process_batch_move(conn, data)
+                            self._broadcast_board()
+                            self._send_rack_update(conn)
+                        else:
+                            # For single moves, just pass the data directly to _process_batch_move
+                            self._process_batch_move(conn, data)
+                            self._broadcast_board()
+                            self._send_rack_update(conn)
+                    except ValueError as e:
+                        error_msg = f"Error: {e}\n"
+                        conn.sendall(error_msg.encode())
                 except socket.timeout:
                     continue
                 except ConnectionResetError:
-                    print(f"[DISCONNECT] Connection reset by {username}")
+                    print(f"[DISCONNECT] Client {username or addr} disconnected (connection reset)")
                     break
                 except Exception as e:
-                    print(f"[ERROR] Client {username} error: {e}")
+                    print(f"[ERROR] Client handler error for {username or addr}: {e}")
                     break
-
         except Exception as e:
-            print(f"[ERROR] Unexpected error handling client {addr}: {e}")
+            print(f"[ERROR] Client {addr} error: {e}")
+            traceback.print_exc()
         finally:
-            print(f"[DISCONNECT] Removing client {addr}")
+            print(f"[DISCONNECT] Removing client {username or addr}")
             self._remove_client(conn)
-            print(f"[DISCONNECTED] {conn} (fully removed)")
 
     def _accept_clients(self):
         """Accept incoming client connections with proper interrupt handling and ESC key support."""
@@ -1121,49 +993,6 @@ class ScrabbleServer:
         """Get the definition of a word from the dictionary."""
         return self.dictionary.get(word, "Definition not found")
 
-    def _calculate_word_score_from_positions(self, word_positions, new_positions, temp_board, temp_blanks):
-        """Calculate score for a word given its exact positions."""
-        word_score = 0
-        word_mult = 1
-        
-        # Check if this is the primary word (contains all new moves)
-        is_primary_word = all(pos in word_positions for pos in new_positions)
-        
-        # Calculate score for this word
-        for row, col in word_positions:
-            letter = temp_board[row][col]
-            # Check if this is a blank tile
-            is_blank = (row, col) in temp_blanks
-            # Always score 0 for blank tiles
-            letter_score = 0 if is_blank else self._get_letter_value(letter)
-            square_type = self._get_square_type(row, col)
-            
-            # Check if this is a new tile (part of the current move)
-            is_new_tile = (row, col) in new_positions
-            
-            if is_new_tile:
-                # Apply letter multipliers only to new tiles
-                if square_type == 'DL':
-                    letter_score *= 2
-                elif square_type == 'TL':
-                    letter_score *= 3
-                # Apply word multipliers to all tiles
-                if square_type == 'DW' or square_type == '*':  # Center star is also double word
-                    word_mult *= 2
-                elif square_type == 'TW':
-                    word_mult *= 3
-            
-            word_score += letter_score
-        
-        # Apply word multiplier
-        word_score *= word_mult
-        
-        # Add bingo bonus (50 points) only for primary words that use all 7 tiles
-        if is_primary_word and len(new_positions) == 7:
-            word_score += 50
-            
-        return word_score
-
     def _log_move(self, username, words, points, positions):
         """Log a move with words played, points, and positions."""
         move_info = {
@@ -1186,7 +1015,7 @@ class ScrabbleServer:
             word_positions_list = self._current_word_positions.get(word, [])
             for word_positions in word_positions_list:
                 # Calculate score for this specific word using the new method
-                word_score = self._calculate_word_score_from_positions(word_positions, new_positions, temp_board, self.board_blanks)
+                word_score = self._calculate_word_score(word_positions, new_positions, temp_board, self.board_blanks)
                 
                 word_info = {
                     "word": word,
