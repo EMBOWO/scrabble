@@ -66,7 +66,7 @@ class ScrabbleClient:
         'A': 1, 'B': 3, 'C': 3, 'D': 2, 'E': 1, 'F': 4, 'G': 2, 'H': 4,
         'I': 1, 'J': 8, 'K': 5, 'L': 1, 'M': 3, 'N': 1, 'O': 1, 'P': 3,
         'Q': 10, 'R': 1, 'S': 1, 'T': 1, 'U': 1, 'V': 4, 'W': 4, 'X': 8,
-        'Y': 4, 'Z': 10, '?': 0
+        'Y': 4, 'Z': 10, '?': 10
     }
     
     # Input field colors
@@ -83,10 +83,10 @@ class ScrabbleClient:
         pygame.init()
         self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
         pygame.display.set_caption("BAB GROUP SCRABBLE")
-        self.font = pygame.font.SysFont(None, 24)
-        self.button_font = pygame.font.SysFont(None, 20)
-        self.info_font = pygame.font.SysFont(None, 18)
-        self.title_font = pygame.font.SysFont(None, 36)  # Larger font for game end screen
+        
+        # Calculate scaled font sizes based on tile size
+        self._update_font_sizes()
+        
         self.clock = pygame.time.Clock()
         self.state_lock = threading.Lock()
         
@@ -115,6 +115,8 @@ class ScrabbleClient:
         self.drag_offset = (0, 0)  # Offset from mouse position to tile center
         self.drag_start_pos = (0, 0)  # Starting position of drag
         self.drag_threshold = 5  # Minimum pixels to move before considering it a drag
+        self.dragging_from_board = False  # Track if we're dragging from board
+        self.drag_board_pos = None  # Track the board position we're dragging from
         
         # Game end state
         self.game_ended = False
@@ -142,7 +144,8 @@ class ScrabbleClient:
         # Calculate height to end above buttons
         button_y = (self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + 
                    self.RACK_HEIGHT + self.INFO_HEIGHT + 15 + 36 + 20)  # Button Y position
-        self.move_log_height = button_y - (self.MARGIN + 150)  # Height from player list to buttons
+        log_y = self.MARGIN + 150  # Start of move log
+        self.move_log_height = button_y - log_y - self.TILE_SIZE  # Height from log start to button area minus margin
         self.scroll_bar_rect = None  # Store scroll bar rectangle
         self.scroll_bar_dragging = False  # Track if scroll bar is being dragged
         self.scroll_bar_height = 0  # Height of the scroll bar
@@ -164,6 +167,28 @@ class ScrabbleClient:
         self.ready = False  # Track if this client is ready
         self.game_started = False  # Track if game has started
         self.error_time = 0  # For auto-clearing error messages
+
+    def _update_font_sizes(self):
+        """Update font sizes based on current tile size."""
+        # Base font sizes at tile size 40
+        base_tile_size = 40
+        scale_factor = self.TILE_SIZE / base_tile_size
+        
+        # Only scale the main font used for letters and special tiles
+        self.font_size = int(24 * scale_factor)  # Main font for letters and special tiles
+        self.score_font_size = int(16 * scale_factor)  # Score numbers for letter tiles
+        
+        # Fixed font sizes for other elements
+        self.info_font_size = 18  # Info text
+        self.button_font_size = 20  # Button text
+        self.title_font_size = 36  # Title text
+        
+        # Create font objects
+        self.font = pygame.font.SysFont(None, self.font_size)
+        self.score_font = pygame.font.SysFont(None, self.score_font_size)
+        self.info_font = pygame.font.SysFont(None, self.info_font_size)
+        self.button_font = pygame.font.SysFont(None, self.button_font_size)
+        self.title_font = pygame.font.SysFont(None, self.title_font_size)
 
     def _initialize_special_tiles(self):
         """Initialize the special tiles grid."""
@@ -346,6 +371,7 @@ class ScrabbleClient:
         """Attempt to connect to the server with the provided credentials."""
         if not self.username_input:
             self.error_message = "Please enter a username"
+            self.error_time = pygame.time.get_ticks()  # Set error time when setting error
             return
             
         self.connecting = True
@@ -376,14 +402,17 @@ class ScrabbleClient:
                 self.sock.settimeout(None)  # No timeout for user input
             except ConnectionRefusedError:
                 self.error_message = "Connection refused. Is the server running?"
+                self.error_time = pygame.time.get_ticks()  # Set error time when setting error
                 self.connecting = False
                 return
             except socket.gaierror:
                 self.error_message = "Invalid IP address or hostname"
+                self.error_time = pygame.time.get_ticks()  # Set error time when setting error
                 self.connecting = False
                 return
             except Exception as e:
                 self.error_message = f"Connection failed: {str(e)}"
+                self.error_time = pygame.time.get_ticks()  # Set error time when setting error
                 self.connecting = False
                 return
             
@@ -396,10 +425,12 @@ class ScrabbleClient:
             print(f"[DEBUG] Server response: {response}")
             if response.startswith("ERROR"):
                 self.error_message = f"Server rejected connection: {response[6:]}"
+                self.error_time = pygame.time.get_ticks()  # Set error time when setting error
                 self.connecting = False
                 return
             elif response != "OK:Username accepted":
                 self.error_message = "Unexpected server response"
+                self.error_time = pygame.time.get_ticks()  # Set error time when setting error
                 self.connecting = False
                 return
             print("[DEBUG] Connected successfully! Waiting for game data...")
@@ -515,8 +546,11 @@ class ScrabbleClient:
                     # Update game_started from server
                     if "game_started" in data:
                         self.game_started = data["game_started"]
-                        if self.game_started:
-                            self.ready = True
+                    # Update ready state based on server data
+                    for player in self.players:
+                        if player["username"] == self.username:
+                            self.ready = player["ready"]
+                            break
                     self.draw_player_list()
                 elif isinstance(data, dict) and data.get("type") == "move_log":
                     print("Received move log update")
@@ -616,6 +650,10 @@ class ScrabbleClient:
                 self._draw_buttons()
                 self.draw_player_list()
                 self.draw_move_log()
+                
+                # Draw blank tile dialog last, so it appears on top of everything
+                if self.showing_blank_dialog:
+                    self._draw_blank_dialog()
             
             # Force update the display
             pygame.display.flip()
@@ -695,8 +733,7 @@ class ScrabbleClient:
                     # Draw score number (bottom right)
                     # Always show 0 for blank tiles
                     score = 0 if (r, c) in self.blank_tiles else self.LETTER_VALUES.get(server_letter.upper(), 0)
-                    score_font = pygame.font.SysFont(None, 16)
-                    score_text = score_font.render(str(score), True, (80, 80, 80))
+                    score_text = self.score_font.render(str(score), True, (80, 80, 80))
                     score_rect = score_text.get_rect(bottomright=(x + self.TILE_SIZE - 3, y + self.TILE_SIZE - 2))
                     self.screen.blit(score_text, score_rect)
                     
@@ -715,8 +752,7 @@ class ScrabbleClient:
                     # Draw score number (bottom right)
                     # Always show 0 for blank tiles
                     score = 0 if (r, c) in self.blank_tiles else self.LETTER_VALUES.get(buffer_letter.upper(), 0)
-                    score_font = pygame.font.SysFont(None, 16)
-                    score_text = score_font.render(str(score), True, (80, 80, 80))
+                    score_text = self.score_font.render(str(score), True, (80, 80, 80))
                     score_rect = score_text.get_rect(bottomright=(x + self.TILE_SIZE - 3, y + self.TILE_SIZE - 2))
                     self.screen.blit(score_text, score_rect)
                     
@@ -737,6 +773,91 @@ class ScrabbleClient:
                 # Highlight selected board cell
                 if self.selected_board_cell == (r, c):
                     pygame.draw.rect(self.screen, (255, 0, 0), rect, 3)
+
+        # Draw ghost tile for valid drop position
+        if self.dragging_tile:
+            mouse_x, mouse_y = pygame.mouse.get_pos()
+            # Calculate tile center position
+            tile_center_x = mouse_x - self.drag_offset[0]
+            tile_center_y = mouse_y - self.drag_offset[1]
+            col = (tile_center_x - self.MARGIN) // self.TILE_SIZE
+            row = (tile_center_y - self.MARGIN) // self.TILE_SIZE
+            
+            if 0 <= row < self.BOARD_SIZE and 0 <= col < self.BOARD_SIZE:
+                if self.board[row][col] == '' and (row, col) not in self.letter_buffer:
+                    ghost_rect = pygame.Rect(
+                        self.MARGIN + col * self.TILE_SIZE,
+                        self.MARGIN + row * self.TILE_SIZE,
+                        self.TILE_SIZE,
+                        self.TILE_SIZE
+                    )
+                    # Draw semi-transparent ghost tile
+                    ghost_surface = pygame.Surface((self.TILE_SIZE, self.TILE_SIZE), pygame.SRCALPHA)
+                    ghost_surface.fill((200, 200, 200, 128))  # Semi-transparent gray
+                    pygame.draw.rect(ghost_surface, (0, 0, 0), ghost_surface.get_rect(), 2)
+                    
+                    # Draw ghost letter
+                    if self.dragging_from_board:
+                        row, col = self.drag_board_pos
+                        letter = self.letter_buffer[(row, col)]
+                        text_color = self.LETTER_TEXT_COLORS['blank'] if (row, col) in self.blank_tiles else self.LETTER_TEXT_COLORS['normal']
+                    else:
+                        letter = self.tile_rack[self.drag_current_index]
+                        text_color = self.LETTER_TEXT_COLORS['blank'] if letter == '?' else self.LETTER_TEXT_COLORS['normal']
+                    
+                    text = self.font.render(letter, True, text_color)
+                    text_rect = text.get_rect(center=(self.TILE_SIZE // 2, self.TILE_SIZE // 2))
+                    ghost_surface.blit(text, text_rect)
+                    
+                    # Draw ghost score number
+                    if self.dragging_from_board:
+                        row, col = self.drag_board_pos
+                        score = 0 if (row, col) in self.blank_tiles else self.LETTER_VALUES.get(letter.upper(), 0)
+                    else:
+                        score = 0 if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
+                    
+                    score_font = pygame.font.SysFont(None, 16)
+                    score_text = score_font.render(str(score), True, (80, 80, 80))
+                    score_rect = score_text.get_rect(bottomright=(self.TILE_SIZE - 3, self.TILE_SIZE - 2))
+                    ghost_surface.blit(score_text, score_rect)
+                    
+                    self.screen.blit(ghost_surface, ghost_rect)
+
+        # Draw the tile being dragged
+        if self.dragging_tile:
+            mouse_x, mouse_y = pygame.mouse.get_pos()
+            x = mouse_x - self.drag_offset[0] - self.TILE_SIZE // 2
+            y = mouse_y - self.drag_offset[1] - self.TILE_SIZE // 2
+            rect = pygame.Rect(x, y, self.TILE_SIZE, self.TILE_SIZE)
+            
+            # Draw dragged tile
+            pygame.draw.rect(self.screen, self.LETTER_COLORS['dragging'], rect)
+            pygame.draw.rect(self.screen, (0, 0, 0), rect, 2)
+            
+            # Draw letter
+            if self.dragging_from_board:
+                row, col = self.drag_board_pos
+                letter = self.letter_buffer[(row, col)]
+                text_color = self.LETTER_TEXT_COLORS['blank'] if (row, col) in self.blank_tiles else self.LETTER_TEXT_COLORS['normal']
+            else:
+                letter = self.tile_rack[self.drag_current_index]
+                text_color = self.LETTER_TEXT_COLORS['blank'] if letter == '?' else self.LETTER_TEXT_COLORS['normal']
+            
+            text = self.font.render(letter, True, text_color)
+            text_rect = text.get_rect(center=rect.center)
+            self.screen.blit(text, text_rect)
+            
+            # Draw score number
+            if self.dragging_from_board:
+                row, col = self.drag_board_pos
+                score = 0 if (row, col) in self.blank_tiles else self.LETTER_VALUES.get(letter.upper(), 0)
+            else:
+                score = 0 if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
+            
+            score_font = pygame.font.SysFont(None, 16)
+            score_text = score_font.render(str(score), True, (80, 80, 80))
+            score_rect = score_text.get_rect(bottomright=(x + self.TILE_SIZE - 3, y + self.TILE_SIZE - 2))
+            self.screen.blit(score_text, score_rect)
 
         # Draw word previews if there are buffered letters
         if self.letter_buffer:
@@ -828,55 +949,69 @@ class ScrabbleClient:
                         
                         self.screen.blit(score_text, (score_x, score_y))
 
-        # Draw blank tile dialog if active
-        if self.showing_blank_dialog:
-            # Draw semi-transparent overlay
-            overlay = pygame.Surface((self.WIDTH, self.HEIGHT), pygame.SRCALPHA)
-            overlay.fill((0, 0, 0, 128))
-            self.screen.blit(overlay, (0, 0))
-            
-            # Draw dialog box
-            dialog_width = 300
-            dialog_height = 150
-            dialog_x = (self.WIDTH - dialog_width) // 2
-            dialog_y = (self.HEIGHT - dialog_height) // 2
-            
-            pygame.draw.rect(self.screen, (255, 255, 255), 
-                           (dialog_x, dialog_y, dialog_width, dialog_height))
-            pygame.draw.rect(self.screen, (0, 0, 0), 
-                           (dialog_x, dialog_y, dialog_width, dialog_height), 2)
-            
-            # Draw instructions
-            text = self.font.render("Type a letter for the blank tile", True, (0, 0, 0))
-            text_rect = text.get_rect(centerx=dialog_x + dialog_width//2, 
-                                    y=dialog_y + 20)
-            self.screen.blit(text, text_rect)
-            
-            text = self.info_font.render("(Press ESC to cancel)", True, (100, 100, 100))
-            text_rect = text.get_rect(centerx=dialog_x + dialog_width//2, 
-                                    y=dialog_y + 50)
-            self.screen.blit(text, text_rect)
-
     def _draw_tile_rack(self):
         """Draw the player's tile rack."""
         rack_y = self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + 10
         
+        # Calculate rack width based on whether we're dragging from board or rack
+        if self.dragging_tile:
+            if self.dragging_from_board:
+                # When dragging from board, add space for ghost tile
+                rack_width = len(self.tile_rack) * (self.TILE_SIZE + 5) + 5
+                is_dragging_to_rack = False
+                drop_index = None
+                mouse_x, mouse_y = pygame.mouse.get_pos()
+                if rack_y <= mouse_y <= rack_y + self.TILE_SIZE:
+                    rack_x = self.MARGIN + len(self.tile_rack) * (self.TILE_SIZE + 5)
+                    if mouse_x >= self.MARGIN and mouse_x <= rack_x + self.TILE_SIZE + 5:
+                        # Calculate drop index based on tile center position
+                        tile_center_x = mouse_x - self.drag_offset[0]
+                        drop_index = (tile_center_x - self.MARGIN) // (self.TILE_SIZE + 5)
+                        drop_index = max(0, min(drop_index, len(self.tile_rack)))
+                        rack_width += self.TILE_SIZE + 5  # Add space for ghost tile
+                        is_dragging_to_rack = True
+            else:
+                # When dragging from rack, check if we're hovering over the rack
+                mouse_x, mouse_y = pygame.mouse.get_pos()
+                if rack_y <= mouse_y <= rack_y + self.TILE_SIZE:
+                    # When hovering over rack, keep full width but don't show ghost
+                    rack_width = len(self.tile_rack) * (self.TILE_SIZE + 5) + 5
+                    is_dragging_to_rack = True
+                    drop_index = (mouse_x - self.MARGIN) // (self.TILE_SIZE + 5)
+                    drop_index = max(0, min(drop_index, len(self.tile_rack)))
+                else:
+                    # When not hovering over rack, remove the dragged tile's space
+                    rack_width = (len(self.tile_rack) - 1) * (self.TILE_SIZE + 5) + 5
+                    is_dragging_to_rack = False
+                    drop_index = None
+        else:
+            rack_width = len(self.tile_rack) * (self.TILE_SIZE + 5) + 5
+            is_dragging_to_rack = False
+            drop_index = None
+        
         # Draw rack background
-        rack_bg = pygame.Rect(self.MARGIN - 5, rack_y - 5, 
-                             len(self.tile_rack) * (self.TILE_SIZE + 5) + 5, 
-                             self.TILE_SIZE + 10)
+        rack_bg = pygame.Rect(self.MARGIN - 5, rack_y - 5, rack_width, self.TILE_SIZE + 10)
         pygame.draw.rect(self.screen, (220, 220, 220), rack_bg)
         pygame.draw.rect(self.screen, (100, 100, 100), rack_bg, 2)
         
         # Draw tiles
         for i, letter in enumerate(self.tile_rack):
-            x = self.MARGIN + i * (self.TILE_SIZE + 5)
-            rect = pygame.Rect(x, rack_y, self.TILE_SIZE, self.TILE_SIZE)
-            
             # Skip drawing the tile being dragged
             if self.dragging_tile and i == self.drag_current_index:
                 continue
                 
+            # Calculate x position, adjusting for the dragged tile's position
+            if is_dragging_to_rack and i >= drop_index and self.dragging_from_board:
+                x = self.MARGIN + (i + 1) * (self.TILE_SIZE + 5)  # Shift tiles right of drop position
+            else:
+                # When dragging from rack and not hovering over rack, adjust positions to fill the gap
+                if self.dragging_tile and not self.dragging_from_board and not is_dragging_to_rack and i > self.drag_current_index:
+                    x = self.MARGIN + (i - 1) * (self.TILE_SIZE + 5)
+                else:
+                    x = self.MARGIN + i * (self.TILE_SIZE + 5)
+            
+            rect = pygame.Rect(x, rack_y, self.TILE_SIZE, self.TILE_SIZE)
+            
             # Highlight selected tile
             if self.exchange_mode:
                 color = (255, 200, 200) if i in self.tiles_to_exchange else self.LETTER_COLORS['rack']
@@ -895,13 +1030,12 @@ class ScrabbleClient:
             # Draw score number (bottom right)
             # Always show 0 for blank tiles
             score = 0 if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
-            score_font = pygame.font.SysFont(None, 16)
-            score_text = score_font.render(str(score), True, (80, 80, 80))
+            score_text = self.score_font.render(str(score), True, (80, 80, 80))
             score_rect = score_text.get_rect(bottomright=(x + self.TILE_SIZE - 3, rack_y + self.TILE_SIZE - 2))
             self.screen.blit(score_text, score_rect)
         
         # Draw the tile being dragged
-        if self.dragging_tile and self.drag_current_index is not None:
+        if self.dragging_tile:
             mouse_x, mouse_y = pygame.mouse.get_pos()
             x = mouse_x - self.drag_offset[0] - self.TILE_SIZE // 2
             y = mouse_y - self.drag_offset[1] - self.TILE_SIZE // 2
@@ -912,14 +1046,25 @@ class ScrabbleClient:
             pygame.draw.rect(self.screen, (0, 0, 0), rect, 2)
             
             # Draw letter
-            letter = self.tile_rack[self.drag_current_index]
-            text_color = self.LETTER_TEXT_COLORS['blank'] if letter == '?' else self.LETTER_TEXT_COLORS['normal']
+            if self.dragging_from_board:
+                row, col = self.drag_board_pos
+                letter = self.letter_buffer[(row, col)]
+                text_color = self.LETTER_TEXT_COLORS['blank'] if (row, col) in self.blank_tiles else self.LETTER_TEXT_COLORS['normal']
+            else:
+                letter = self.tile_rack[self.drag_current_index]
+                text_color = self.LETTER_TEXT_COLORS['blank'] if letter == '?' else self.LETTER_TEXT_COLORS['normal']
+            
             text = self.font.render(letter, True, text_color)
             text_rect = text.get_rect(center=rect.center)
             self.screen.blit(text, text_rect)
             
             # Draw score number
-            score = 0 if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
+            if self.dragging_from_board:
+                row, col = self.drag_board_pos
+                score = 0 if (row, col) in self.blank_tiles else self.LETTER_VALUES.get(letter.upper(), 0)
+            else:
+                score = 0 if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
+            
             score_font = pygame.font.SysFont(None, 16)
             score_text = score_font.render(str(score), True, (80, 80, 80))
             score_rect = score_text.get_rect(bottomright=(x + self.TILE_SIZE - 3, y + self.TILE_SIZE - 2))
@@ -938,27 +1083,30 @@ class ScrabbleClient:
         pygame.draw.rect(self.screen, (240, 240, 240), info_bg)
         pygame.draw.rect(self.screen, (150, 150, 150), info_bg, 1)
         
-        # Tiles remaining info
+        # Calculate column positions
+        first_col_x = self.MARGIN + 10
+        second_col_x = self.MARGIN + info_width // 2
+        
+        # First column: Tiles remaining and rack count
         tiles_text = f"Tiles in bag: {self.tiles_remaining}"
         tiles_surface = self.info_font.render(tiles_text, True, (0, 0, 0))
-        self.screen.blit(tiles_surface, (self.MARGIN + 10, info_y + 5))
+        self.screen.blit(tiles_surface, (first_col_x, info_y + 5))
         
-        # Rack count info
         rack_text = f"Your tiles: {len(self.tile_rack)}/7"
         rack_surface = self.info_font.render(rack_text, True, (0, 0, 0))
-        self.screen.blit(rack_surface, (self.MARGIN + 10, info_y + 25))
+        self.screen.blit(rack_surface, (first_col_x, info_y + 25))
         
-        # Buffer info
+        # Second column: Buffer info and turn status
         if self.letter_buffer:
             buffer_text = f"Placed letters: {len(self.letter_buffer)}"
             buffer_surface = self.info_font.render(buffer_text, True, (0, 0, 0))
-            self.screen.blit(buffer_surface, (self.MARGIN + 250, info_y + 5))
+            self.screen.blit(buffer_surface, (second_col_x, info_y + 5))
         
         # Show waiting message if not started
         if not self.game_started:
             wait_text = "Waiting for all players to be ready..."
             wait_surface = self.info_font.render(wait_text, True, (200, 0, 0))
-            self.screen.blit(wait_surface, (self.MARGIN + 250, info_y + 25))
+            self.screen.blit(wait_surface, (second_col_x, info_y + 25))
         # Show "Your turn" message if it's the current player's turn
         elif self.game_started and not self.game_ended:
             # Find the current player's username
@@ -966,7 +1114,7 @@ class ScrabbleClient:
             if current_player and current_player.get("username") == self.username:
                 turn_text = "Your turn"
                 turn_surface = self.info_font.render(turn_text, True, (0, 200, 0))  # Green color
-                self.screen.blit(turn_surface, (self.MARGIN + 250, info_y + 25))
+                self.screen.blit(turn_surface, (second_col_x, info_y + 25))
 
     def _draw_error_box(self):
         """Draw a separate error box below the info panel if there is an error message."""
@@ -994,9 +1142,20 @@ class ScrabbleClient:
         # Return button
         pygame.draw.rect(self.screen, (200, 200, 200), self.return_button)
         pygame.draw.rect(self.screen, (0, 0, 0), self.return_button, 2)
-        return_text = self.button_font.render("Return", True, (0, 0, 0))
-        return_rect = return_text.get_rect(center=self.return_button.center)
-        self.screen.blit(return_text, return_rect)
+        # Split text to make first letter bold and underlined
+        return_text = "Return"
+        first_letter = self.button_font.render(return_text[0], True, (0, 0, 0))
+        rest_text = self.button_font.render(return_text[1:], True, (0, 0, 0))
+        # Draw first letter with underline
+        first_rect = first_letter.get_rect(midleft=self.return_button.midleft)
+        first_rect.x += 10  # Add some padding
+        self.screen.blit(first_letter, first_rect)
+        pygame.draw.line(self.screen, (0, 0, 0), 
+                        (first_rect.left, first_rect.bottom),
+                        (first_rect.right, first_rect.bottom), 2)
+        # Draw rest of text
+        rest_rect = rest_text.get_rect(midleft=first_rect.midright)
+        self.screen.blit(rest_text, rest_rect)
         
         # Send button
         if self.exchange_mode:
@@ -1005,9 +1164,20 @@ class ScrabbleClient:
             button_color = (100, 200, 100) if self.letter_buffer and self.game_started else (150, 150, 150)
         pygame.draw.rect(self.screen, button_color, self.send_button)
         pygame.draw.rect(self.screen, (0, 0, 0), self.send_button, 2)
-        send_text = self.button_font.render("Send", True, (0, 0, 0))
-        send_rect = send_text.get_rect(center=self.send_button.center)
-        self.screen.blit(send_text, send_rect)
+        # Split text to make first letter bold and underlined
+        send_text = "Done"
+        first_letter = self.button_font.render(send_text[0], True, (0, 0, 0))
+        rest_text = self.button_font.render(send_text[1:], True, (0, 0, 0))
+        # Draw first letter with underline
+        first_rect = first_letter.get_rect(midleft=self.send_button.midleft)
+        first_rect.x += 10  # Add some padding
+        self.screen.blit(first_letter, first_rect)
+        pygame.draw.line(self.screen, (0, 0, 0), 
+                        (first_rect.left, first_rect.bottom),
+                        (first_rect.right, first_rect.bottom), 2)
+        # Draw rest of text
+        rest_rect = rest_text.get_rect(midleft=first_rect.midright)
+        self.screen.blit(rest_text, rest_rect)
         
         # Exchange button - always visible but grayed out if game not started
         if self.game_started:
@@ -1016,36 +1186,80 @@ class ScrabbleClient:
             exchange_color = (150, 150, 150)  # Grayed out when game not started
         pygame.draw.rect(self.screen, exchange_color, self.exchange_button)
         pygame.draw.rect(self.screen, (0, 0, 0), self.exchange_button, 2)
-        exchange_text = self.button_font.render("Exchange", True, (0, 0, 0))
-        exchange_rect = exchange_text.get_rect(center=self.exchange_button.center)
-        self.screen.blit(exchange_text, exchange_rect)
+        # Split text to make first letter bold and underlined
+        exchange_text = "Exchange"
+        first_letter = self.button_font.render(exchange_text[0], True, (0, 0, 0))
+        rest_text = self.button_font.render(exchange_text[1:], True, (0, 0, 0))
+        # Draw first letter with underline
+        first_rect = first_letter.get_rect(midleft=self.exchange_button.midleft)
+        first_rect.x += 10  # Add some padding
+        self.screen.blit(first_letter, first_rect)
+        pygame.draw.line(self.screen, (0, 0, 0), 
+                        (first_rect.left, first_rect.bottom),
+                        (first_rect.right, first_rect.bottom), 2)
+        # Draw rest of text
+        rest_rect = rest_text.get_rect(midleft=first_rect.midright)
+        self.screen.blit(rest_text, rest_rect)
         
         # Ready button (only if game not started)
         if not self.game_started:
-            ready_color = (100, 200, 255) if not self.ready else (180, 180, 180)
+            ready_color = (100, 200, 255) if not self.ready else (0, 200, 0)  # Green when ready
             pygame.draw.rect(self.screen, ready_color, self.ready_button)
             pygame.draw.rect(self.screen, (0, 0, 0), self.ready_button, 2)
-            ready_text = self.button_font.render("Ready", True, (0, 0, 0))
-            ready_rect = ready_text.get_rect(center=self.ready_button.center)
-            self.screen.blit(ready_text, ready_rect)
+            # Split text to make first letter bold and underlined
+            ready_text = "Ready"
+            first_letter = self.button_font.render(ready_text[0], True, (0, 0, 0))
+            rest_text = self.button_font.render(ready_text[1:], True, (0, 0, 0))
+            # Draw first letter with underline
+            first_rect = first_letter.get_rect(midleft=self.ready_button.midleft)
+            first_rect.x += 10  # Add some padding
+            self.screen.blit(first_letter, first_rect)
+            pygame.draw.line(self.screen, (0, 0, 0), 
+                            (first_rect.left, first_rect.bottom),
+                            (first_rect.right, first_rect.bottom), 2)
+            # Draw rest of text
+            rest_rect = rest_text.get_rect(midleft=first_rect.midright)
+            self.screen.blit(rest_text, rest_rect)
         
         # Pass button (only if game started and player is ready)
         if self.game_started and self.ready and not self.game_ended:
             pass_color = (200, 200, 255)
             pygame.draw.rect(self.screen, pass_color, self.pass_button)
             pygame.draw.rect(self.screen, (0, 0, 0), self.pass_button, 2)
-            pass_text = self.button_font.render("Pass", True, (0, 0, 0))
-            pass_rect = pass_text.get_rect(center=self.pass_button.center)
-            self.screen.blit(pass_text, pass_rect)
+            # Split text to make first letter bold and underlined
+            pass_text = "Pass"
+            first_letter = self.button_font.render(pass_text[0], True, (0, 0, 0))
+            rest_text = self.button_font.render(pass_text[1:], True, (0, 0, 0))
+            # Draw first letter with underline
+            first_rect = first_letter.get_rect(midleft=self.pass_button.midleft)
+            first_rect.x += 10  # Add some padding
+            self.screen.blit(first_letter, first_rect)
+            pygame.draw.line(self.screen, (0, 0, 0), 
+                            (first_rect.left, first_rect.bottom),
+                            (first_rect.right, first_rect.bottom), 2)
+            # Draw rest of text
+            rest_rect = rest_text.get_rect(midleft=first_rect.midright)
+            self.screen.blit(rest_text, rest_rect)
             
         # Shuffle button (only if game started and player is ready)
         if self.game_started and self.ready and not self.game_ended:
             shuffle_color = (200, 255, 200)  # Light green
             pygame.draw.rect(self.screen, shuffle_color, self.shuffle_button)
             pygame.draw.rect(self.screen, (0, 0, 0), self.shuffle_button, 2)
-            shuffle_text = self.button_font.render("Shuffle", True, (0, 0, 0))
-            shuffle_rect = shuffle_text.get_rect(center=self.shuffle_button.center)
-            self.screen.blit(shuffle_text, shuffle_rect)
+            # Split text to make first letter bold and underlined
+            shuffle_text = "Shuffle"
+            first_letter = self.button_font.render(shuffle_text[0], True, (0, 0, 0))
+            rest_text = self.button_font.render(shuffle_text[1:], True, (0, 0, 0))
+            # Draw first letter with underline
+            first_rect = first_letter.get_rect(midleft=self.shuffle_button.midleft)
+            first_rect.x += 10  # Add some padding
+            self.screen.blit(first_letter, first_rect)
+            pygame.draw.line(self.screen, (0, 0, 0), 
+                            (first_rect.left, first_rect.bottom),
+                            (first_rect.right, first_rect.bottom), 2)
+            # Draw rest of text
+            rest_rect = rest_text.get_rect(midleft=first_rect.midright)
+            self.screen.blit(rest_text, rest_rect)
 
     def draw_player_list(self):
         """Draw player list in the UI."""
@@ -1172,6 +1386,18 @@ class ScrabbleClient:
             # If a tile from rack is selected, place it in buffer
             if self.selected_rack_index is not None:
                 self._place_tile_in_buffer(row, col)
+            # If we clicked on a buffered tile, start dragging it
+            elif (row, col) in self.letter_buffer:
+                self.dragging_tile = True
+                self.dragging_from_board = True
+                self.drag_board_pos = (row, col)
+                self.drag_start_pos = (x, y)
+                # Calculate offset from mouse to tile center
+                tile_center_x = self.MARGIN + col * self.TILE_SIZE + self.TILE_SIZE // 2
+                tile_center_y = self.MARGIN + row * self.TILE_SIZE + self.TILE_SIZE // 2
+                self.drag_offset = (x - tile_center_x, y - tile_center_y)
+                # Don't select the board cell when starting a drag
+                self.selected_board_cell = None
 
     def _place_tile_in_buffer(self, row, col):
         """Place a selected tile from the rack into the client buffer."""
@@ -1292,13 +1518,19 @@ class ScrabbleClient:
             self.exchange_mode = False
             self.tiles_to_exchange.clear()
 
-    def _send_ready(self):
-        """Send READY to server and mark as ready."""
+    def _send_ready(self, ready=True):
+        """Send READY/UNREADY to server and update ready state.
+        
+        Args:
+            ready (bool): True to send READY, False to send UNREADY
+        """
         try:
-            self.sock.sendall(b"READY\n")
-            self.ready = True
+            message = "READY" if ready else "UNREADY"
+            self.sock.sendall(f"{message}\n".encode())
+            self.ready = ready
         except Exception as e:
-            print(f"Failed to send READY: {e}")
+            print(f"Failed to send {message}: {e}")
+            self.ready = False  # Reset ready state if send fails
 
     def _handle_mouse_click(self, pos):
         """Handle mouse click events."""
@@ -1320,7 +1552,12 @@ class ScrabbleClient:
         if not self.game_started:
             # Only allow ready button clicks before game starts
             if self.ready_button.collidepoint(x, y):
-                self._send_ready()
+                if self.ready:
+                    # Unready
+                    self._send_ready(ready=False)
+                else:
+                    # Ready
+                    self._send_ready(ready=True)
                 return True
             return False
 
@@ -1356,23 +1593,26 @@ class ScrabbleClient:
         x, y = pos
         
         # Handle tile dragging
-        if self.dragging_tile and not self.exchange_mode:
+        if self.dragging_tile:
             # Check if we've moved past the drag threshold
             dx = x - self.drag_start_pos[0]
             dy = y - self.drag_start_pos[1]
             distance = (dx * dx + dy * dy) ** 0.5
             
             if distance >= self.drag_threshold:
-                rack_y = self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + 10
-                # Calculate new index based on mouse position
-                new_index = (x - self.MARGIN) // (self.TILE_SIZE + 5)
-                new_index = max(0, min(new_index, len(self.tile_rack) - 1))
-                
-                if new_index != self.drag_current_index:
-                    # Swap tiles
-                    self.tile_rack[self.drag_current_index], self.tile_rack[new_index] = \
-                        self.tile_rack[new_index], self.tile_rack[self.drag_current_index]
-                    self.drag_current_index = new_index
+                if not self.dragging_from_board:
+                    # Handle rack tile dragging
+                    rack_y = self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + 10
+                    # Calculate new index based on tile center position
+                    tile_center_x = x - self.drag_offset[0]
+                    new_index = (tile_center_x - self.MARGIN) // (self.TILE_SIZE + 5)
+                    new_index = max(0, min(new_index, len(self.tile_rack) - 1))
+                    
+                    if new_index != self.drag_current_index:
+                        # Swap tiles
+                        self.tile_rack[self.drag_current_index], self.tile_rack[new_index] = \
+                            self.tile_rack[new_index], self.tile_rack[self.drag_current_index]
+                        self.drag_current_index = new_index
         
         # Handle scroll bar dragging
         if self.scroll_bar_dragging and self.scroll_bar_rect:
@@ -1396,11 +1636,79 @@ class ScrabbleClient:
                 
                 if distance < self.drag_threshold:
                     # Handle as a click
-                    if self.selected_rack_index == self.drag_current_index:
-                        self.selected_rack_index = None
+                    if self.dragging_from_board:
+                        # Select the board cell
+                        self.selected_board_cell = self.drag_board_pos
                     else:
-                        self.selected_rack_index = self.drag_current_index
-                        self.selected_board_cell = None
+                        if self.selected_rack_index == self.drag_current_index:
+                            self.selected_rack_index = None
+                        else:
+                            self.selected_rack_index = self.drag_current_index
+                            self.selected_board_cell = None
+                else:
+                    # Handle drag release
+                    if self.dragging_from_board:
+                        # Check if we're over the rack
+                        rack_y = self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + 10
+                        tile_center_y = mouse_y - self.drag_offset[1]
+                        if rack_y <= tile_center_y <= rack_y + self.TILE_SIZE:
+                            # Calculate rack position based on tile center
+                            tile_center_x = mouse_x - self.drag_offset[0]
+                            rack_x = self.MARGIN + len(self.tile_rack) * (self.TILE_SIZE + 5)
+                            if tile_center_x >= self.MARGIN and tile_center_x <= rack_x + self.TILE_SIZE + 5:
+                                # Calculate drop index based on tile center position
+                                drop_index = (tile_center_x - self.MARGIN) // (self.TILE_SIZE + 5)
+                                drop_index = max(0, min(drop_index, len(self.tile_rack)))
+                                
+                                # Return tile to rack at the drop position
+                                row, col = self.drag_board_pos
+                                letter = self.letter_buffer[(row, col)]
+                                # If this was a blank tile, return it as '?'
+                                if (row, col) in self.blank_tiles:
+                                    self.tile_rack.insert(drop_index, '?')
+                                    self.blank_tiles.remove((row, col))
+                                else:
+                                    self.tile_rack.insert(drop_index, letter)
+                                del self.letter_buffer[(row, col)]
+                        else:
+                            # Check if we're over a valid board position
+                            tile_center_x = mouse_x - self.drag_offset[0]
+                            tile_center_y = mouse_y - self.drag_offset[1]
+                            col = (tile_center_x - self.MARGIN) // self.TILE_SIZE
+                            row = (tile_center_y - self.MARGIN) // self.TILE_SIZE
+                            if 0 <= row < self.BOARD_SIZE and 0 <= col < self.BOARD_SIZE:
+                                # If we're over a different position and it's empty
+                                if (row, col) != self.drag_board_pos and self.board[row][col] == '' and (row, col) not in self.letter_buffer:
+                                    # Move the tile to the new position
+                                    old_row, old_col = self.drag_board_pos
+                                    letter = self.letter_buffer[(old_row, old_col)]
+                                    del self.letter_buffer[(old_row, old_col)]
+                                    # If this was a blank tile, show the dialog again
+                                    if (old_row, old_col) in self.blank_tiles:
+                                        self.blank_tiles.remove((old_row, old_col))
+                                        self.blank_pos = (row, col)
+                                        self.showing_blank_dialog = True
+                                    else:
+                                        self.letter_buffer[(row, col)] = letter
+                    else:
+                        # Check if we're over the board
+                        tile_center_x = mouse_x - self.drag_offset[0]
+                        tile_center_y = mouse_y - self.drag_offset[1]
+                        col = (tile_center_x - self.MARGIN) // self.TILE_SIZE
+                        row = (tile_center_y - self.MARGIN) // self.TILE_SIZE
+                        if 0 <= row < self.BOARD_SIZE and 0 <= col < self.BOARD_SIZE:
+                            # If the board position is empty
+                            if self.board[row][col] == '' and (row, col) not in self.letter_buffer:
+                                # Place tile on board
+                                letter = self.tile_rack[self.drag_current_index]
+                                # Handle blank tile
+                                if letter == '?':
+                                    self.blank_pos = (row, col)
+                                    self.showing_blank_dialog = True
+                                    self.tile_rack.pop(self.drag_current_index)
+                                else:
+                                    self.letter_buffer[(row, col)] = letter
+                                    self.tile_rack.pop(self.drag_current_index)
             
             # Reset drag state
             self.dragging_tile = False
@@ -1408,18 +1716,37 @@ class ScrabbleClient:
             self.drag_current_index = None
             self.drag_offset = (0, 0)
             self.drag_start_pos = (0, 0)
+            self.dragging_from_board = False
+            self.drag_board_pos = None
             
         self.scroll_bar_dragging = False
 
     def _handle_keydown(self, key):
         """Handle keyboard events."""
-        # Always allow quitting with Q
-        if key == pygame.K_q:
+        # Always allow quitting with Q, unless we're in the blank letter dialog
+        if key == pygame.K_q and not self.showing_blank_dialog:
             # Quit with Q
             print("\nShutting down client...")
             self.running = False
             return
             
+        # Handle tile size adjustment
+        if key == pygame.K_PLUS or key == pygame.K_EQUALS:  # Plus or equals key
+            self._adjust_tile_size(5)
+            return
+        elif key == pygame.K_MINUS:  # Minus key
+            self._adjust_tile_size(-5)
+            return
+        elif key == pygame.K_r:
+            if not self.game_started:
+                if self.ready:
+                    # Unready
+                    self._send_ready(ready=False)
+                else:
+                    # Ready
+                    self._send_ready(ready=True)
+                return
+
         if not self.game_started:
             self._set_error("Game has not started yet.")
             return
@@ -1428,6 +1755,9 @@ class ScrabbleClient:
         if self.showing_blank_dialog:
             if pygame.K_a <= key <= pygame.K_z:
                 letter = chr(key).upper()
+                # Don't allow selecting '?' as the blank letter
+                if letter == '?':
+                    return
                 row, col = self.blank_pos
                 self.letter_buffer[(row, col)] = letter
                 self.blank_tiles.add((row, col))  # Mark this as a blank tile
@@ -1442,6 +1772,28 @@ class ScrabbleClient:
                 self.blank_pos = None
             return
             
+        # Handle button shortcuts (only if blank dialog is not showing)
+        if not self.showing_blank_dialog:
+            if key == pygame.K_r:  # Ready
+                self._return_all_letters()
+            elif key == pygame.K_d:  # Done
+                if self.exchange_mode:
+                    self._send_exchange()
+                else:
+                    self._send_word()
+            elif key == pygame.K_e:  # Exchange
+                self.exchange_mode = not self.exchange_mode
+                self.tiles_to_exchange.clear()
+            elif key == pygame.K_p:  # Pass
+                if self.game_started and self.ready and not self.game_ended:
+                    try:
+                        self.sock.sendall(b"PASS\n")
+                    except Exception as e:
+                        self._set_error(f"Failed to pass turn: {e}")
+            elif key == pygame.K_s:  # Shuffle
+                if self.game_started and self.ready and not self.game_ended:
+                    random.shuffle(self.tile_rack)
+
         if key == pygame.K_ESCAPE:
             # Cancel selection with ESC
             self.selected_rack_index = None
@@ -1455,19 +1807,36 @@ class ScrabbleClient:
         elif key == pygame.K_BACKSPACE:
             # Return all letters with Backspace
             self._return_all_letters()
-        elif key == pygame.K_r:
-            # Request rack update with 'R' key
-            try:
-                self.sock.sendall(b"GET_RACK")
-            except Exception as e:
-                self._set_error(f"Failed to request rack update: {e}")
-        elif key == pygame.K_p:
-            # Pass turn with 'P' key
-            if not self.game_ended:
-                try:
-                    self.sock.sendall(b"PASS")
-                except Exception as e:
-                    self._set_error(f"Failed to pass turn: {e}")
+
+    def _adjust_tile_size(self, delta):
+        """Adjust the tile size and update all dependent measurements."""
+        new_size = self.TILE_SIZE + delta
+        if 20 <= new_size <= 60:  # Limit tile size between 30 and 60
+            self.TILE_SIZE = new_size
+            # Update dependent measurements
+            self.RACK_HEIGHT = self.TILE_SIZE + 20
+            self.WIDTH = self.TILE_SIZE * self.BOARD_SIZE + self.MARGIN * 2 + self.PLAYER_LIST_WIDTH + 20
+            self.HEIGHT = (self.TILE_SIZE * self.BOARD_SIZE + self.MARGIN * 2 + 
+                          self.RACK_HEIGHT + self.INFO_HEIGHT + self.BUTTON_HEIGHT + 
+                          self.BUTTON_MARGIN * 3 + 40)
+            
+            # Resize the window
+            self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
+            
+            # Update font sizes
+            self._update_font_sizes()
+            
+            # Recalculate move log height
+            button_y = (self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + 
+                       self.RACK_HEIGHT + self.INFO_HEIGHT + 15 + 36 + 20)
+            log_y = self.MARGIN + 150
+            self.move_log_height = button_y - log_y - self.TILE_SIZE
+            
+            # Update button positions
+            self._setup_buttons()
+            
+            # Show feedback
+            self._set_error(f"Tile size: {self.TILE_SIZE}")
 
     def _calculate_move_log_content_height(self):
         """Calculate the total height of the move log content."""
@@ -1700,7 +2069,7 @@ class ScrabbleClient:
             pygame.draw.rect(self.screen, (100, 100, 100), self.scroll_bar_rect, 1)
         
         # Set clipping region for move log content
-        clip_rect = pygame.Rect(log_x, log_y + 30, self.PLAYER_LIST_WIDTH - 20, self.move_log_height - 30)
+        clip_rect = pygame.Rect(log_x, log_y + 30, self.PLAYER_LIST_WIDTH - 15, self.move_log_height - 30)  # Reduced width by 5 pixels
         self.screen.set_clip(clip_rect)
         
         # Initialize y_offset
@@ -1772,10 +2141,25 @@ class ScrabbleClient:
             
             # Draw move content based on type
             if 'words' in move:  # Regular move
-                player_text = f"{move['username']}: {move['total_points']} pts"
+                player_text = f"{move['username']}: "
                 player_surface = self.info_font.render(player_text, True, (0, 0, 0))
                 if log_y + 30 <= y_offset <= log_y + self.move_log_height:
                     self.screen.blit(player_surface, (log_x + 25, y_offset))
+                
+                # Draw points number in purple
+                points_num = f"{move['total_points']}"
+                points_surface = self.info_font.render(points_num, True, (128, 0, 128))  # Purple color
+                if log_y + 30 <= y_offset <= log_y + self.move_log_height:
+                    points_rect = points_surface.get_rect(topleft=(log_x + 25 + player_surface.get_width(), y_offset))
+                    self.screen.blit(points_surface, points_rect)
+                
+                # Draw "pts" in black
+                pts_text = " pts"
+                pts_surface = self.info_font.render(pts_text, True, (0, 0, 0))
+                if log_y + 30 <= y_offset <= log_y + self.move_log_height:
+                    pts_rect = pts_surface.get_rect(topleft=(points_rect.right, y_offset))
+                    self.screen.blit(pts_surface, pts_rect)
+                
                 y_offset += 20
                 
                 # Draw each word
@@ -2041,6 +2425,35 @@ class ScrabbleClient:
     def _is_valid_word(self, word):
         """Check if a word is in the dictionary."""
         return word.upper() in self.dictionary
+
+    def _draw_blank_dialog(self):
+        """Draw the blank tile letter selection dialog."""
+        # Draw semi-transparent overlay
+        overlay = pygame.Surface((self.WIDTH, self.HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 128))
+        self.screen.blit(overlay, (0, 0))
+        
+        # Draw dialog box
+        dialog_width = 300
+        dialog_height = 150
+        dialog_x = (self.WIDTH - dialog_width) // 2
+        dialog_y = (self.HEIGHT - dialog_height) // 2
+        
+        pygame.draw.rect(self.screen, (255, 255, 255), 
+                       (dialog_x, dialog_y, dialog_width, dialog_height))
+        pygame.draw.rect(self.screen, (0, 0, 0), 
+                       (dialog_x, dialog_y, dialog_width, dialog_height), 2)
+        
+        # Draw instructions
+        text = self.font.render("Type a letter for the blank tile", True, (0, 0, 0))
+        text_rect = text.get_rect(centerx=dialog_x + dialog_width//2, 
+                                y=dialog_y + 20)
+        self.screen.blit(text, text_rect)
+        
+        text = self.info_font.render("(Press ESC to cancel)", True, (100, 100, 100))
+        text_rect = text.get_rect(centerx=dialog_x + dialog_width//2, 
+                                y=dialog_y + 50)
+        self.screen.blit(text, text_rect)
 
 def main():
     """Entry point for the application."""

@@ -29,7 +29,6 @@ class ScrabbleServer:
         'Y': 2, 'Z': 1, '?': 2  # * represents blank tiles
     }
 
-    # Standard Scrabble tile distribution
     # TILE_DISTRIBUTION = {
     #     'A': 0, 'B': 0, 'C': 0, 'D': 1, 'E': 0, 'F': 0, 'G': 0, 'H': 0,
     #     'I': 0, 'J': 0, 'K': 0, 'L': 0, 'M': 0, 'N': 0, 'O': 0, 'P': 0,
@@ -804,19 +803,12 @@ class ScrabbleServer:
                         elif data == "READY":
                             self.player_ready[username] = True
                             self._broadcast_player_list()
+                            # Check if all players are ready
                             if all(self.player_ready.get(u, False) for u in self.turn_order):
-                                self.game_started = True
-                                # Fill racks for all players when game starts
-                                with self.client_lock:
-                                    for client in self.clients:
-                                        self._fill_rack(client)
-                                self._broadcast_message({"type": "game_start"})
-                        # Block all other actions before game start
-                        elif not self.game_started:
-                            if data == 'GET_RACK':
-                                self._send_rack_update(conn)
-                            else:
-                                conn.sendall("ERROR:Game has not started yet. Wait for all players to be ready.\n".encode())
+                                self._start_game()
+                        elif data == "UNREADY":
+                            self.player_ready[username] = False
+                            self._broadcast_player_list()
                         elif data == "PASS":
                             self._handle_pass(conn)
                         elif data.startswith('DRAW:'):
@@ -974,7 +966,7 @@ class ScrabbleServer:
             'A': 1, 'B': 3, 'C': 3, 'D': 2, 'E': 1, 'F': 4, 'G': 2, 'H': 4,
             'I': 1, 'J': 8, 'K': 5, 'L': 1, 'M': 3, 'N': 1, 'O': 1, 'P': 3,
             'Q': 10, 'R': 1, 'S': 1, 'T': 1, 'U': 1, 'V': 4, 'W': 4, 'X': 8,
-            'Y': 4, 'Z': 10, '?': 0
+            'Y': 4, 'Z': 10, '?': 10
         }
         return values.get(char.upper(), 0)
 
@@ -1242,6 +1234,15 @@ class ScrabbleServer:
         
         # If neither same row nor same column, it's not a straight line
         return False
+
+    def _start_game(self):
+        """Initialize the game state when all players are ready."""
+        self.game_started = True
+        # Fill racks for all players when game starts
+        with self.client_lock:
+            for client in self.clients:
+                self._fill_rack(client)
+        self._broadcast_message({"type": "game_start"})
 
 
 def main():
