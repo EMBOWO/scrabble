@@ -1272,7 +1272,7 @@ class ScrabbleClient:
                 # Space between moves
                 content_height += 2
             elif move.get('type') == 'pass':  # Pass move
-                content_height += 20
+                content_height += 15
                 content_height += 2  # Space after pass move
             elif move.get('type') == 'game_end':  # Game end move
                 content_height += 20
@@ -1486,7 +1486,7 @@ class ScrabbleClient:
                     move_height += 2  # Space after definition
                 move_height += 2  # Space between moves
             elif move.get('type') == 'pass':  # Pass move
-                move_height += 20  # Pass move line
+                move_height += 15  # Pass move line
                 move_height += 2  # Space after pass move
             elif move.get('type') == 'game_end':  # Game end move
                 move_height += 20  # Game end line
@@ -1629,7 +1629,7 @@ class ScrabbleClient:
                 player_surface = self.info_font.render(player_text, True, (0, 0, 0))
                 if log_y + 30 <= y_offset <= log_y + self.move_log_height:
                     self.screen.blit(player_surface, (log_x + 25, y_offset))
-                y_offset += 20
+                y_offset += 15
                 y_offset += 2  # Space after pass move
             elif move.get('type') == 'game_end':  # Game end move
                 # Draw final scores

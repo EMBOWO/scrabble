@@ -592,15 +592,18 @@ class ScrabbleServer:
         if not username or username != self.current_turn:
             raise ValueError("Not your turn")
             
-        if self.last_move_was_pass:
-            self.consecutive_passes += 1
-            # End game after one pass in a one-player game, or after all players pass in multi-player
-            if len(self.turn_order) == 1 or self.consecutive_passes >= len(self.turn_order):
-                self._end_game()
-                return
-        else:
+        # If the last move was not a pass, reset the consecutive passes counter
+        if not self.last_move_was_pass:
             self.consecutive_passes = 1
-            self.last_move_was_pass = True
+        else:
+            self.consecutive_passes += 1
+            
+        self.last_move_was_pass = True
+        
+        # Only end game if all players have passed consecutively
+        if self.consecutive_passes >= len(self.turn_order):
+            self._end_game()
+            return
             
         # Log the pass
         pass_info = {
@@ -756,6 +759,10 @@ class ScrabbleServer:
                 "type": "exchange"
             }
             self.move_log.append(exchange_info)
+            
+            # Reset consecutive passes since a valid move was made
+            self.consecutive_passes = 0
+            self.last_move_was_pass = False
             
             # Switch turns
             with self.turn_lock:
