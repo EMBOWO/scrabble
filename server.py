@@ -861,75 +861,117 @@ class ScrabbleServer:
             conn.sendall(error_msg.encode())
 
     def _handle_client(self, conn, addr):
-        """Main client handler loop."""
+        """Handle a client connection."""
         print(f"[CONNECTION] From {addr}")
-        username = None
         try:
-            self._add_client(conn)
-            fileno = conn.fileno()
-            username = self.client_usernames.get(fileno)
-            self._send_initial_data(conn)
-            conn.settimeout(1.0)
-            while self.running:
+            # Set socket timeout
+            try:
+                conn.settimeout(self.SOCKET_TIMEOUT)
+            except OSError as e:
+                print(f"[ERROR] Failed to set socket timeout for {addr}: {e}")
+                return
+
+            # Get username
+            username = self._get_username(conn)
+            if not username:
+                print(f"[ERROR] Failed to get username from {addr}")
+                return
+
+            # Add client to game
+            if not self._add_client(conn):
+                print(f"[ERROR] Failed to add client {username} to game")
+                return
+
+            # Send initial game state
+            try:
+                self._send_initial_data(conn)
+            except Exception as e:
+                print(f"[ERROR] Failed to send initial data to {username}: {e}")
+                self._remove_client(conn)
+                return
+
+            # Main client handling loop
+            while True:
                 try:
-                    data = conn.recv(1024).decode().strip()
-                    if not data:
-                        print(f"[DISCONNECT] Client {username or addr} disconnected (no data)")
+                    # Get message from client
+                    message = self._receive_line(conn)
+                    if not message:
+                        print(f"[DISCONNECT] Client {username} disconnected")
                         break
-                    try:
-                        if data == "DISCONNECT":
-                            print(f"[DISCONNECT] Client {username or addr} requested disconnect")
-                            break
-                        elif data == "READY":
-                            self.player_ready[username] = True
+
+                    # Handle different message types
+                    if message == "READY":
+                        if username in self.clients:
+                            self.clients[username]["ready"] = True
+                            print(f"[READY] {username} is ready")
                             self._broadcast_player_list()
-                            if all(self.player_ready.get(u, False) for u in self.turn_order):
+                            # Check if all clients are ready
+                            if all(client["ready"] for client in self.clients.values()):
+                                print("[GAME] All players ready, starting game")
                                 self.game_started = True
-                                # Fill racks for all players when game starts
-                                with self.client_lock:
-                                    for client in self.clients:
-                                        self._fill_rack(client)
-                                self._broadcast_message({"type": "game_start"})
-                        # Block all other actions before game start
-                        elif not self.game_started:
-                            if data == 'GET_RACK':
-                                self._send_rack_update(conn)
-                            else:
-                                conn.sendall("ERROR:Game has not started yet. Wait for all players to be ready.\n".encode())
-                        elif data == "PASS":
-                            self._handle_pass(conn)
-                        elif data.startswith('DRAW:'):
-                            self._handle_draw_request(conn, data[5:])
-                        elif data.startswith('EXCHANGE:'):
-                            self._handle_exchange_request(conn, data[9:])
-                        elif data == 'GET_RACK':
-                            self._send_rack_update(conn)
-                        elif ';' in data:
-                            self._process_batch_move(conn, data)
-                            self._broadcast_board()
-                            self._send_rack_update(conn)
-                        else:
-                            # For single moves, just pass the data directly to _process_batch_move
-                            self._process_batch_move(conn, data)
-                            self._broadcast_board()
-                            self._send_rack_update(conn)
-                    except ValueError as e:
-                        error_msg = f"Error: {e}\n"
-                        conn.sendall(error_msg.encode())
+                                # Distribute tiles to all players
+                                for client in self.clients.values():
+                                    self._fill_rack(client["conn"])
+                                self._broadcast_player_list()
+                                self._broadcast_board()
+                                # Set first player's turn
+                                if self.clients:
+                                    first_player = next(iter(self.clients))
+                                    self.clients[first_player]["current_turn"] = True
+                                    self._broadcast_player_list()
+
+                    elif message == "PASS":
+                        if not self.game_started:
+                            print(f"[ERROR] {username} tried to pass before game started")
+                            continue
+                        self._handle_pass(conn)
+
+                    elif message.startswith("DRAW:"):
+                        if not self.game_started:
+                            print(f"[ERROR] {username} tried to draw before game started")
+                            continue
+                        count_str = message[5:]
+                        self._handle_draw_request(conn, count_str)
+
+                    elif message.startswith("EXCHANGE:"):
+                        if not self.game_started:
+                            print(f"[ERROR] {username} tried to exchange before game started")
+                            continue
+                        tiles_str = message[9:]
+                        self._handle_exchange_request(conn, tiles_str)
+
+                    elif message == "GET_RACK":
+                        if not self.game_started:
+                            print(f"[ERROR] {username} tried to get rack before game started")
+                            continue
+                        self._send_rack_update(conn)
+
+                    elif message == "DISCONNECT":
+                        print(f"[DISCONNECT] {username} requested disconnect")
+                        break
+
+                    else:
+                        # Assume it's a move
+                        if not self.game_started:
+                            print(f"[ERROR] {username} tried to make a move before game started")
+                            continue
+                        self._process_batch_move(conn, message)
+
                 except socket.timeout:
                     continue
                 except ConnectionResetError:
-                    print(f"[DISCONNECT] Client {username or addr} disconnected (connection reset)")
+                    print(f"[DISCONNECT] Connection reset by {username}")
                     break
                 except Exception as e:
-                    print(f"[ERROR] Client handler error for {username or addr}: {e}")
+                    print(f"[ERROR] Client {username} error: {e}")
                     break
+
         except Exception as e:
-            print(f"[ERROR] Client {addr} error: {e}")
-            traceback.print_exc()
+            print(f"[ERROR] Unexpected error handling client {addr}: {e}")
         finally:
-            print(f"[DISCONNECT] Removing client {username or addr}")
+            print(f"[DISCONNECT] Removing client {addr}")
             self._remove_client(conn)
+            print(f"[DISCONNECTED] {conn} (fully removed)")
 
     def _accept_clients(self):
         """Accept incoming client connections with proper interrupt handling and ESC key support."""
