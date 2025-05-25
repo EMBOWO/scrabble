@@ -9,7 +9,7 @@ import traceback
 
 class ScrabbleClient:
     # Class constants
-    TILE_SIZE = 40
+    TILE_SIZE = 30
     BOARD_SIZE = 15
     MARGIN = 40
     RACK_HEIGHT = TILE_SIZE + 20
