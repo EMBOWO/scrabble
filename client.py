@@ -5,6 +5,7 @@ import json
 import sys
 import random
 import traceback
+import time
 
 
 class ScrabbleClient:
@@ -428,57 +429,69 @@ class ScrabbleClient:
                 print("[DEBUG] Socket connection successful")
                 # After connection, set a longer timeout for user input
                 self.sock.settimeout(None)  # No timeout for user input
+                
+                # Only proceed with username if connection is successful
+                username = self.username_input
+                print(f"[DEBUG] Sending username: {username}")
+                # Set a timeout for the username response
+                self.sock.settimeout(10.0)
+                self.sock.sendall(f"USERNAME:{username}\n".encode())
+                response = self._receive_line()
+                print(f"[DEBUG] Server response: {response}")
+                if response.startswith("ERROR"):
+                    self.error_message = f"Server rejected connection: {response[6:]}"
+                    self.error_time = pygame.time.get_ticks()  # Set error time when setting error
+                    self.connecting = False
+                    self._reset_game_state()
+                    return
+                elif response != "OK:Username accepted":
+                    self.error_message = "Unexpected server response"
+                    self.error_time = pygame.time.get_ticks()  # Set error time when setting error
+                    self.connecting = False
+                    self._reset_game_state()
+                    return
+                print("[DEBUG] Connected successfully! Waiting for game data...")
+                # Store the username after successful connection
+                self.username = username
+                
+                # Start network thread after successful connection and username acceptance
+                if self.network_thread is None or not self.network_thread.is_alive():
+                    self.network_thread = threading.Thread(target=self._receive_messages, daemon=True)
+                    self.network_thread.start()
+                    # Give the network thread a moment to start
+                    time.sleep(0.1)
+                
+                # Connection successful, exit connection screen
+                self.connection_screen = False
+                self.connecting = False
+                
             except ConnectionRefusedError:
                 self.error_message = "Connection refused. Is the server running?"
                 self.error_time = pygame.time.get_ticks()  # Set error time when setting error
                 self.connecting = False
+                self._reset_game_state()
                 return
             except socket.gaierror:
                 self.error_message = "Invalid IP address or hostname"
                 self.error_time = pygame.time.get_ticks()  # Set error time when setting error
                 self.connecting = False
+                self._reset_game_state()
                 return
             except Exception as e:
                 self.error_message = f"Connection failed: {str(e)}"
                 self.error_time = pygame.time.get_ticks()  # Set error time when setting error
                 self.connecting = False
+                self._reset_game_state()
                 return
-            
-            username = self.username_input
-            print(f"[DEBUG] Sending username: {username}")
-            # Set a timeout for the username response
-            self.sock.settimeout(10.0)
-            self.sock.sendall(f"USERNAME:{username}\n".encode())
-            response = self._receive_line()
-            print(f"[DEBUG] Server response: {response}")
-            if response.startswith("ERROR"):
-                self.error_message = f"Server rejected connection: {response[6:]}"
-                self.error_time = pygame.time.get_ticks()  # Set error time when setting error
-                self.connecting = False
-                return
-            elif response != "OK:Username accepted":
-                self.error_message = "Unexpected server response"
-                self.error_time = pygame.time.get_ticks()  # Set error time when setting error
-                self.connecting = False
-                return
-            print("[DEBUG] Connected successfully! Waiting for game data...")
-            # Store the username after successful connection
-            self.username = username
-            # Start network thread after successful connection
-            if self.network_thread is None or not self.network_thread.is_alive():
-                self.network_thread = threading.Thread(target=self._receive_messages, daemon=True)
-                self.network_thread.start()
-            
-            # Connection successful, exit connection screen
-            self.connection_screen = False
-            self.connecting = False
             
         except socket.timeout:
             self.error_message = "Connection timed out - is the server running?"
             self.connecting = False
+            self._reset_game_state()
         except Exception as e:
             self.error_message = f"Connection failed: {str(e)}"
             self.connecting = False
+            self._reset_game_state()
 
     def _receive_line(self):
         """Helper to read a complete line from socket."""
@@ -506,9 +519,16 @@ class ScrabbleClient:
         while self.running:
             if self.sock:
                 try:
+                    # Check if socket is actually connected before trying to receive
+                    if not self.sock.getpeername():
+                        print("Socket not connected, waiting...")
+                        time.sleep(0.1)
+                        continue
+                        
                     data = self.sock.recv(4096).decode()
                     if not data:
                         print("Connection closed by server")
+                        self._handle_server_disconnect("Server closed the connection")
                         break
                     buffer += data
                     while '\n' in buffer:
@@ -524,9 +544,8 @@ class ScrabbleClient:
                                 if line.startswith("ERROR:"):
                                     print(f"Server error: {line[6:]}")
                                     if "shutting down" in line.lower():
-                                        print("Server is shutting down, closing client...")
-                                        self.running = False
-                                        self._cleanup()
+                                        print("Server is shutting down, returning to connection screen...")
+                                        self._handle_server_disconnect("Server is shutting down")
                                         return
                                 elif line.startswith("OK:"):
                                     print(f"Server confirmation: {line[3:]}")
@@ -535,10 +554,27 @@ class ScrabbleClient:
                                 print(f"Raw message was: {repr(line)}")
                 except socket.timeout:
                     continue
+                except ConnectionResetError:
+                    print("Connection reset by server")
+                    self._handle_server_disconnect("Connection reset by server")
+                    break
                 except Exception as e:
                     if self.running:
                         print(f"Network error: {e}")
+                        self._handle_server_disconnect(f"Network error: {str(e)}")
                     break
+            else:
+                # If no socket, wait a bit before checking again
+                time.sleep(0.1)
+
+    def _handle_server_disconnect(self, error_message):
+        """Handle server disconnection by returning to connection screen with error message."""
+        print(f"Handling server disconnect: {error_message}")
+        with self.state_lock:
+            self._reset_game_state()
+            self.error_message = error_message
+            self.error_time = pygame.time.get_ticks()
+            self.connection_screen = True
 
     def _process_server_message(self, message):
         """Process a message received from the server."""
@@ -660,9 +696,8 @@ class ScrabbleClient:
                         del self._pending_buffer
                         del self._pending_rack
                     if "shutting down" in message.lower():
-                        print("Server is shutting down, closing client...")
-                        self.running = False
-                        self._cleanup()
+                        print("Server is shutting down, returning to connection screen...")
+                        self._handle_server_disconnect("Server is shutting down")
                         return
                 elif message.startswith("OK:"):
                     print(f"Server confirmation: {message[3:]}")
@@ -1705,29 +1740,11 @@ class ScrabbleClient:
             if hasattr(self, 'return_to_connection_button') and self.return_to_connection_button.collidepoint(x, y):
                 # Disconnect from server and return to connection screen
                 try:
-                    # Reset game state
-                    self.connection_screen = True
-                    self.game_ended = False
-                    self.game_started = False
-                    self.players = []
-                    self.tile_rack = []
-                    self.move_log = [] 
-                    self.board = [['' for _ in range(self.BOARD_SIZE)] for _ in range(self.BOARD_SIZE)]
-                    self.letter_buffer.clear()
-                    self.blank_tiles.clear()
+                    self._reset_game_state()
                 except Exception as e:
                     print(f"Error during disconnect: {e}")
                     # Even if there's an error, try to clean up
-                    self.sock = None
-                    self.connection_screen = True
-                    self.game_ended = False
-                    self.game_started = False
-                    self.players = []
-                    self.tile_rack = []
-                    self.move_log = [] 
-                    self.board = [['' for _ in range(self.BOARD_SIZE)] for _ in range(self.BOARD_SIZE)]
-                    self.letter_buffer.clear()
-                    self.blank_tiles.clear()
+                    self._reset_game_state()
                 return
             return
             
@@ -2209,7 +2226,15 @@ class ScrabbleClient:
         print("[DEBUG] Starting cleanup procedure")
         self._cleaned = True
         print("Cleaning up resources...")
+        
+        # First stop the network thread
         self.running = False
+        if self.network_thread and self.network_thread.is_alive():
+            print("[DEBUG] Waiting for network thread to finish")
+            self.network_thread.join(timeout=2.0)
+            print("[DEBUG] Network thread finished")
+        
+        # Then handle socket cleanup
         if self.sock:
             try:
                 print("[DEBUG] Attempting to send disconnect message")
@@ -2223,7 +2248,9 @@ class ScrabbleClient:
                 print("[DEBUG] Socket closed successfully")
             except Exception as e:
                 print(f"[ERROR] Error during socket cleanup: {e}")
-            self.sock = None
+            finally:
+                self.sock = None
+        
         print("[DEBUG] Quitting pygame")
         pygame.quit()
         print("Client shutdown complete")
@@ -2801,6 +2828,31 @@ class ScrabbleClient:
 
         # Store close button rect for click detection
         self.unseen_tiles_close_button = close_button_rect
+
+    def _reset_game_state(self):
+        """Reset all game state variables and disconnect from server if connected."""
+        # Try to disconnect from server if connected
+        if self.sock:
+            try:
+                self.sock.sendall("DISCONNECT\n".encode())
+            except:
+                pass
+            try:
+                self.sock.close()
+            except:
+                pass
+            self.sock = None
+
+        # Reset all game state
+        self.connection_screen = True
+        self.game_ended = False
+        self.game_started = False
+        self.players = []
+        self.tile_rack = []
+        self.move_log = []
+        self.board = [['' for _ in range(self.BOARD_SIZE)] for _ in range(self.BOARD_SIZE)]
+        self.letter_buffer.clear()
+        self.blank_tiles.clear()
 
 def main():
     """Entry point for the application."""
