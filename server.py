@@ -312,19 +312,7 @@ class ScrabbleServer:
             print(f"[DISCONNECTED] {username if username else conn} (fully removed)")
             # If all players left, reset game state
             if not self.turn_order:
-                self.game_started = False
-                self.game_ended = False
-                self.current_turn = None
-                self.player_racks.clear()
-                self.player_points.clear()
-                self.player_ready.clear()
-                # Reset the tile bag
-                self.tile_bag = self._initialize_tile_bag()
-                # Reset the board
-                self.board = [['' for _ in range(self.BOARD_SIZE)] for _ in range(self.BOARD_SIZE)]
-                # Clear the move log
-                self.move_log.clear()
-                self.board_blanks.clear()
+                self._reset_game_state()
                 print("[SERVER] All players left. Game state reset.")
             else:
                 # If game hasn't started, check if all remaining are ready
@@ -824,6 +812,33 @@ class ScrabbleServer:
                     try:
                         if data == "DISCONNECT":
                             print(f"[DISCONNECT] Client {username or addr} requested disconnect")
+                            # Handle disconnection
+                            if username:
+                                # Find and remove the player with matching username
+                                player = next((p for p in self.clients if self._get_username(p) == username), None)
+                                if player:
+                                    self.clients.remove(player)
+                                    self.client_usernames.remove(player)
+                                    try:
+                                        player.close()
+                                    except:
+                                        pass
+                                    self._broadcast_player_list()
+                            else:
+                                # Handle disconnection without username
+                                player = next((p for p in self.clients if p == conn), None)
+                                if player:
+                                    self.clients.remove(player)
+                                    self.client_usernames.remove(player)
+                                    try:
+                                        player.close()
+                                    except:
+                                        pass
+                                    self._broadcast_player_list()
+                            
+                            # If no players left, reset game state
+                            if not self.clients:
+                                self._reset_game_state()
                             break
                         elif data == "READY":
                             self.player_ready[username] = True
@@ -1275,6 +1290,21 @@ class ScrabbleServer:
         for client in clients_copy:
             self._fill_rack(client)
         print("[DEBUG] Game initialization complete")
+
+    def _reset_game_state(self):
+        self.game_started = False
+        self.game_ended = False
+        self.current_turn = None
+        self.player_racks.clear()
+        self.player_points.clear()
+        self.player_ready.clear()
+        # Reset the tile bag
+        self.tile_bag = self._initialize_tile_bag()
+        # Reset the board
+        self.board = [['' for _ in range(self.BOARD_SIZE)] for _ in range(self.BOARD_SIZE)]
+        # Clear the move log
+        self.move_log.clear()
+        self.board_blanks.clear()
 
 
 def main():

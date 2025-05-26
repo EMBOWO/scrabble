@@ -155,6 +155,7 @@ class ScrabbleClient:
         self.scroll_bar_rect = None  # Store scroll bar rectangle
         self.scroll_bar_dragging = False  # Track if scroll bar is being dragged
         self.scroll_bar_height = 0  # Height of the scroll bar
+        self.scroll_bar_offset = 0  # Height between scroll bar and mouse
         self.move_log_content_height = 0
         
         # Client-side letter buffer - stores temporarily placed letters
@@ -503,40 +504,41 @@ class ScrabbleClient:
         buffer = ""
         print("Network thread started - waiting for messages...")
         while self.running:
-            try:
-                data = self.sock.recv(4096).decode()
-                if not data:
-                    print("Connection closed by server")
+            if self.sock:
+                try:
+                    data = self.sock.recv(4096).decode()
+                    if not data:
+                        print("Connection closed by server")
+                        break
+                    buffer += data
+                    while '\n' in buffer:
+                        line, buffer = buffer.split('\n', 1)
+                        line = line.strip()
+                        print(f"[DEBUG] Received line: {repr(line)}")  # Debug print
+                        if line:
+                            try:
+                                self._process_server_message(line)
+                            except json.JSONDecodeError as e:
+                                print(f"JSON decode error: {e}")
+                                print(f"Raw message was: {repr(line)}")
+                                if line.startswith("ERROR:"):
+                                    print(f"Server error: {line[6:]}")
+                                    if "shutting down" in line.lower():
+                                        print("Server is shutting down, closing client...")
+                                        self.running = False
+                                        self._cleanup()
+                                        return
+                                elif line.startswith("OK:"):
+                                    print(f"Server confirmation: {line[3:]}")
+                            except Exception as e:
+                                print(f"Error processing message: {e}")
+                                print(f"Raw message was: {repr(line)}")
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    if self.running:
+                        print(f"Network error: {e}")
                     break
-                buffer += data
-                while '\n' in buffer:
-                    line, buffer = buffer.split('\n', 1)
-                    line = line.strip()
-                    print(f"[DEBUG] Received line: {repr(line)}")  # Debug print
-                    if line:
-                        try:
-                            self._process_server_message(line)
-                        except json.JSONDecodeError as e:
-                            print(f"JSON decode error: {e}")
-                            print(f"Raw message was: {repr(line)}")
-                            if line.startswith("ERROR:"):
-                                print(f"Server error: {line[6:]}")
-                                if "shutting down" in line.lower():
-                                    print("Server is shutting down, closing client...")
-                                    self.running = False
-                                    self._cleanup()
-                                    return
-                            elif line.startswith("OK:"):
-                                print(f"Server confirmation: {line[3:]}")
-                        except Exception as e:
-                            print(f"Error processing message: {e}")
-                            print(f"Raw message was: {repr(line)}")
-            except socket.timeout:
-                continue
-            except Exception as e:
-                if self.running:
-                    print(f"Network error: {e}")
-                break
 
     def _process_server_message(self, message):
         """Process a message received from the server."""
@@ -569,6 +571,17 @@ class ScrabbleClient:
                             else:
                                 print("[DEBUG] No final scores available")
                                 self.winner = None
+                            if self.sock:
+                                try:
+                                    self.sock.sendall("DISCONNECT\n".encode())
+                                except:
+                                    pass
+                                # Finally close the socket
+                                try:
+                                    self.sock.close()
+                                except:
+                                    pass
+                                self.sock = None
                     elif message_type == "players":
                         print("Received players update")
                         self.players = data["players"]
@@ -702,9 +715,27 @@ class ScrabbleClient:
         overlay.fill((0, 0, 0, 128))
         self.screen.blit(overlay, (0, 0))
         
+        # Calculate base height and additional height needed
+        base_height = 80  # Base height for title and basic content
+        winner_height = 0
+        if self.winner:
+            max_score = max(self.final_scores.values())
+            winners = [k for k, v in self.final_scores.items() if v == max_score]
+            if len(winners) > 1:
+                # Height for draw message, winners list, and spacing
+                winner_height = 40 + (len(winners) * 20) + 20
+            else:
+                # Height for single winner message
+                winner_height = 20
+        
+        # Height for final scores (all players)
+        scores_height = len(self.final_scores) * 20
+        
+        # Calculate total height needed
+        box_height = base_height + winner_height + scores_height + 100  # Increased height for button
+        
         # Draw game end box
         box_width = 400
-        box_height = 300
         box_x = (self.WIDTH - box_width) // 2
         box_y = (self.HEIGHT - box_height) // 2
         
@@ -714,8 +745,14 @@ class ScrabbleClient:
         pygame.draw.rect(self.screen, (0, 0, 0), 
                         (box_x, box_y, box_width, box_height), 2)
         
+        # Create fixed-size fonts for the dialog
+        title_font = pygame.font.SysFont(None, 36)  # Fixed size for title
+        main_font = pygame.font.SysFont(None, 24)   # Fixed size for main text
+        info_font = pygame.font.SysFont(None, 18)   # Fixed size for info text
+        button_font = pygame.font.SysFont(None, 20) # Fixed size for button text
+        
         # Draw title
-        title = self.title_font.render("Game Over!", True, (0, 0, 0))
+        title = title_font.render("Game Over!", True, (0, 0, 0))
         title_rect = title.get_rect(centerx=box_x + box_width//2, 
                                   y=box_y + 20)
         self.screen.blit(title, title_rect)
@@ -729,56 +766,64 @@ class ScrabbleClient:
             if len(winners) > 1:
                 # It's a draw
                 draw_text = "It's a Draw!"
-                draw_surface = self.font.render(draw_text, True, (0, 0, 200))  # Blue color for draw
+                draw_surface = main_font.render(draw_text, True, (0, 0, 200))  # Blue color for draw
                 draw_rect = draw_surface.get_rect(centerx=box_x + box_width//2,
-                                                y=box_y + 70)
+                                                y=box_y + 60)
                 self.screen.blit(draw_surface, draw_rect)
                 
                 # Draw "Winners:" text
                 winners_text = "Winners:"
-                winners_surface = self.font.render(winners_text, True, (0, 0, 0))
+                winners_surface = main_font.render(winners_text, True, (0, 0, 0))
                 winners_rect = winners_surface.get_rect(centerx=box_x + box_width//2,
-                                                      y=box_y + 100)
+                                                      y=box_y + 80)
                 self.screen.blit(winners_surface, winners_rect)
                 
                 # Draw each winner's name
-                y_offset = box_y + 130
+                y_offset = box_y + 100
                 for winner in winners:
                     winner_text = f"{winner}"
-                    winner_surface = self.font.render(winner_text, True, (0, 200, 0))  # Green for winners
+                    winner_surface = main_font.render(winner_text, True, (0, 200, 0))  # Green for winners
                     winner_rect = winner_surface.get_rect(centerx=box_x + box_width//2,
                                                         y=y_offset)
                     self.screen.blit(winner_surface, winner_rect)
-                    y_offset += 30
-                
-                # Draw the winning score
-                score_text = f"Score: {max_score} points"
-                score_surface = self.font.render(score_text, True, (0, 0, 0))
-                score_rect = score_surface.get_rect(centerx=box_x + box_width//2,
-                                                  y=y_offset)
-                self.screen.blit(score_surface, score_rect)
+                    y_offset += 20
             else:
                 # Single winner
                 winner_text = f"Winner: {self.winner}"
-                winner_surface = self.font.render(winner_text, True, (0, 200, 0))
+                winner_surface = main_font.render(winner_text, True, (0, 200, 0))
                 winner_rect = winner_surface.get_rect(centerx=box_x + box_width//2,
-                                                    y=box_y + 70)
+                                                    y=box_y + 60)
                 self.screen.blit(winner_surface, winner_rect)
         
         # Draw final scores
-        y_offset = box_y + 120 if len(winners) <= 1 else box_y + 180
+        y_offset = box_y + 100 if len(winners) <= 1 else box_y + 100 + (len(winners) * 20) + 20
         for username, score in sorted(self.final_scores.items(), key=lambda x: x[1], reverse=True):
             score_text = f"{username}: {score} points"
-            score_surface = self.font.render(score_text, True, (0, 0, 0))
+            score_surface = main_font.render(score_text, True, (0, 0, 0))
             score_rect = score_surface.get_rect(centerx=box_x + box_width//2,
                                               y=y_offset)
             self.screen.blit(score_surface, score_rect)
-            y_offset += 30
+            y_offset += 20
+        
+        # Draw Return to Connection button
+        button_width = 200
+        button_height = 40
+        button_x = box_x + (box_width - button_width) // 2
+        button_y = box_y + box_height - 80
+        
+        self.return_to_connection_button = pygame.Rect(button_x, button_y, button_width, button_height)
+        pygame.draw.rect(self.screen, (100, 200, 255), self.return_to_connection_button)  # Light blue color
+        pygame.draw.rect(self.screen, (0, 0, 0), self.return_to_connection_button, 2)
+        
+        button_text = "Return to Connection"
+        text_surface = button_font.render(button_text, True, (0, 0, 0))
+        text_rect = text_surface.get_rect(center=self.return_to_connection_button.center)
+        self.screen.blit(text_surface, text_rect)
         
         # Draw instructions
-        instructions = self.info_font.render("Press Q to quit", True, (100, 100, 100))
+        instructions = info_font.render("Press Q to quit", True, (100, 100, 100))
         instructions_rect = instructions.get_rect(centerx=box_x + box_width//2,
-                                                y=box_y + box_height - 40)
+                                                y=box_y + box_height - 20)
         self.screen.blit(instructions, instructions_rect)
 
     def _draw_board_tiles(self):
@@ -1380,11 +1425,15 @@ class ScrabbleClient:
                 # Before game start, show ready status
                 status = "Ready" if player["ready"] else "Not Ready"
                 color = (0, 200, 0) if player["ready"] else (200, 0, 0)
-                text = f"{player['username']}: {status}"
+                # Add "(you)" to current player's name
+                username = f"{player['username']} (you)" if player['username'] == self.username else player['username']
+                text = f"{username}: {status}"
             else:
                 # After game start, show points and turn
                 color = (0, 200, 0) if player["current_turn"] else (0, 0, 0)
-                text = f"{player['username']}: {player['points']} pts"
+                # Add "(you)" to current player's name
+                username = f"{player['username']} (you)" if player['username'] == self.username else player['username']
+                text = f"{username}: {player['points']} pts"
                 
             player_surface = self.info_font.render(text, True, color)
             player_rect = player_surface.get_rect(x=player_x + 10, y=player_y + 30 + 20 * i)
@@ -1497,6 +1546,11 @@ class ScrabbleClient:
     def _place_tile_in_buffer(self, row, col):
         """Place a selected tile from the rack into the client buffer."""
         if self.selected_rack_index is None:
+            return
+            
+        # Check if selected index is valid
+        if self.selected_rack_index >= len(self.tile_rack):
+            self.selected_rack_index = None
             return
         
         # Check if position is already occupied (server or buffer)
@@ -1642,8 +1696,39 @@ class ScrabbleClient:
                 return
             
         # Handle connection screen clicks
-        if not self.sock:
+        if self.connection_screen:
             self._handle_connection_screen_click(pos)
+            return
+            
+        # Handle game end screen
+        if self.game_ended:
+            if hasattr(self, 'return_to_connection_button') and self.return_to_connection_button.collidepoint(x, y):
+                # Disconnect from server and return to connection screen
+                try:
+                    # Reset game state
+                    self.connection_screen = True
+                    self.game_ended = False
+                    self.game_started = False
+                    self.players = []
+                    self.tile_rack = []
+                    self.move_log = [] 
+                    self.board = [['' for _ in range(self.BOARD_SIZE)] for _ in range(self.BOARD_SIZE)]
+                    self.letter_buffer.clear()
+                    self.blank_tiles.clear()
+                except Exception as e:
+                    print(f"Error during disconnect: {e}")
+                    # Even if there's an error, try to clean up
+                    self.sock = None
+                    self.connection_screen = True
+                    self.game_ended = False
+                    self.game_started = False
+                    self.players = []
+                    self.tile_rack = []
+                    self.move_log = [] 
+                    self.board = [['' for _ in range(self.BOARD_SIZE)] for _ in range(self.BOARD_SIZE)]
+                    self.letter_buffer.clear()
+                    self.blank_tiles.clear()
+                return
             return
             
         # Handle button clicks
@@ -1657,6 +1742,7 @@ class ScrabbleClient:
         # Check for scroll bar click
         if self.scroll_bar_rect and self.scroll_bar_rect.collidepoint(x, y):
             self.scroll_bar_dragging = True
+            self.scroll_bar_offset = y - self.scroll_bar_rect.top
 
     def _handle_button_click(self, x, y):
         """Handle clicks on buttons."""
@@ -1742,7 +1828,7 @@ class ScrabbleClient:
         if self.scroll_bar_dragging and self.scroll_bar_rect:
             log_y = self.MARGIN + 150
             # Calculate new scroll position based on mouse position
-            relative_y = y - log_y - 30
+            relative_y = y - log_y - 30 - self.scroll_bar_offset
             max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 30))
             scroll_ratio = relative_y / (self.move_log_height - 30 - self.scroll_bar_height)
             new_scroll = int(scroll_ratio * max_scroll)
@@ -2023,7 +2109,7 @@ class ScrabbleClient:
                 content_height += 2  # Space after game end
             elif move.get('type') == 'exchange':  # Exchange move
                 # Calculate height for wrapped exchange text
-                text = f"{move['username']}: Exchanged Tiles"
+                text = f"{move['username']}: Exchanged tiles"
                 words = text.split()
                 lines = []
                 current_line = []
@@ -2075,7 +2161,7 @@ class ScrabbleClient:
                     elif event.type == pygame.MOUSEBUTTONDOWN:
                         if self.connection_screen:
                             self._handle_connection_screen_click(event.pos)
-                        elif not self.game_ended:  # Only handle clicks if game hasn't ended
+                        else:
                             self._handle_mouse_click(event.pos)
                     elif event.type == pygame.MOUSEBUTTONUP:
                         if not self.game_ended:  # Only handle mouse up if game hasn't ended
@@ -2293,7 +2379,7 @@ class ScrabbleClient:
                 
                 # Draw points number in purple
                 points_num = f"{move['total_points']}"
-                points_surface = self.info_font.render(points_num, True, (128, 0, 128))  # Purple color
+                points_surface = self.info_font.render(points_num, True, (0, 74, 128))
                 if log_y + 30 <= y_offset <= log_y + self.move_log_height:
                     points_rect = points_surface.get_rect(topleft=(log_x + 25 + player_surface.get_width(), y_offset))
                     self.screen.blit(points_surface, points_rect)
@@ -2607,16 +2693,16 @@ class ScrabbleClient:
         tile_y = dialog_y + 50
         
         # Draw tile background
-        pygame.draw.rect(self.screen, (128, 0, 128), (tile_x, tile_y, tile_size, tile_size))  # Purple background
+        pygame.draw.rect(self.screen, (255, 255, 255), (tile_x, tile_y, tile_size, tile_size))  # Purple background
         pygame.draw.rect(self.screen, (0, 0, 0), (tile_x, tile_y, tile_size, tile_size), 2)
         
         # Draw question mark in white
-        question_mark = letter_font.render("?", True, (255, 255, 255))
+        question_mark = letter_font.render("?", True, (128, 0, 128))
         question_rect = question_mark.get_rect(center=(tile_x + tile_size//2, tile_y + tile_size//2))
         self.screen.blit(question_mark, question_rect)
         
         # Draw point value (0) in white
-        value_text = value_font.render(str(self.LETTER_VALUES.get('?')), True, (255, 255, 255))
+        value_text = value_font.render(str(self.LETTER_VALUES.get('?')), True, (80, 80, 80))
         value_rect = value_text.get_rect(bottomright=(tile_x + tile_size - 3, tile_y + tile_size - 2))
         self.screen.blit(value_text, value_rect)
 
