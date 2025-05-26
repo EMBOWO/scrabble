@@ -1060,22 +1060,24 @@ class ScrabbleClient:
                 # Calculate and draw score
                 score = self._calculate_word_score(word, positions)
                 score_text = self.font.render(str(score), True, color)
+
+                scaling_ratio = self.TILE_SIZE / 40
                 
                 # Determine score position based on word orientation and position
                 if is_horizontal:
                     # For horizontal words
                     if min_col == 0:  # Word starts at left edge
-                        score_x = rect_x + rect_width + 2
+                        score_x = rect_x + rect_width + 2 * scaling_ratio
                     else:
-                        score_x = rect_x - score_text.get_width() - 2
-                    score_y = rect_y + 2
+                        score_x = rect_x - score_text.get_width() - 2 * scaling_ratio
+                    score_y = rect_y + 2 * scaling_ratio
                 else:
                     # For vertical words
-                    score_x = rect_x + 2
+                    score_x = rect_x + 2 * scaling_ratio
                     if min_row == 0:  # Word starts at top edge
-                        score_y = rect_y + rect_height + 2
+                        score_y = rect_y + rect_height + 2 * scaling_ratio
                     else:
-                        score_y = rect_y - 17
+                        score_y = rect_y - 17 * scaling_ratio
                 
                 self.screen.blit(score_text, (score_x, score_y))
 
@@ -1107,20 +1109,21 @@ class ScrabbleClient:
                         
                         # Determine score position based on word orientation and position
                         is_horizontal = min_row == max_row
+                        scaling_ratio = self.TILE_SIZE / 40
                         if is_horizontal:
                             # For horizontal words
                             if min_col == 0:  # Word starts at left edge
-                                score_x = rect_x + rect_width + 2
+                                score_x = rect_x + rect_width + 2 * scaling_ratio
                             else:
-                                score_x = rect_x - score_text.get_width() - 2
-                            score_y = rect_y + 2
+                                score_x = rect_x - score_text.get_width() - 2 * scaling_ratio
+                            score_y = rect_y + 2 * scaling_ratio
                         else:
                             # For vertical words
-                            score_x = rect_x + 2
+                            score_x = rect_x + 2 * scaling_ratio
                             if min_row == 0:  # Word starts at top edge
-                                score_y = rect_y + rect_height + 2
+                                score_y = rect_y + rect_height + 2 * scaling_ratio
                             else:
-                                score_y = rect_y - 17
+                                score_y = rect_y - 17 * scaling_ratio
                         
                         self.screen.blit(score_text, (score_x, score_y))
 
@@ -2551,16 +2554,19 @@ class ScrabbleClient:
                     x_offset = log_x + 10
                     for row, col, letter, square_type in word_info['positions']:
                         # Determine tile color based on square type
-                        if square_type == 'DL':
-                            color = self.SPECIAL_COLORS['DL']
-                        elif square_type == 'TL':
-                            color = self.SPECIAL_COLORS['TL']
-                        elif square_type == 'DW':
-                            color = self.SPECIAL_COLORS['DW']
-                        elif square_type == 'TW':
-                            color = self.SPECIAL_COLORS['TW']
+                        if square_type is not None:  # Only show special colors for newly placed letters
+                            if square_type == 'DL':
+                                color = self.SPECIAL_COLORS['DL']
+                            elif square_type == 'TL':
+                                color = self.SPECIAL_COLORS['TL']
+                            elif square_type == 'DW':
+                                color = self.SPECIAL_COLORS['DW']
+                            elif square_type == 'TW':
+                                color = self.SPECIAL_COLORS['TW']
+                            else:
+                                color = self.LETTER_COLORS['placed']
                         else:
-                            color = self.LETTER_COLORS['placed']
+                            color = self.LETTER_COLORS['placed']  # Use normal color for existing letters
                         
                         # Draw tile
                         tile_rect = pygame.Rect(x_offset, y_offset, 20, 20)

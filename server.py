@@ -1100,7 +1100,11 @@ class ScrabbleServer:
                 # Add all positions with their square types
                 for r, c in word_positions:
                     square_type = self._get_square_type(r, c)
-                    word_info["positions"].append((r, c, temp_board[r][c], square_type))
+                    # Only include square type if this is a newly placed letter
+                    if (r, c) in new_positions:
+                        word_info["positions"].append((r, c, temp_board[r][c], square_type))
+                    else:
+                        word_info["positions"].append((r, c, temp_board[r][c], None))
                 
                 move_info["words"].append(word_info)
         
