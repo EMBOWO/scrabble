@@ -948,7 +948,7 @@ class ScrabbleClient:
                     )
                     # Draw semi-transparent ghost tile
                     ghost_surface = pygame.Surface((self.TILE_SIZE, self.TILE_SIZE), pygame.SRCALPHA)
-                    ghost_surface.fill((200, 200, 200, 128))  # Semi-transparent gray
+                    ghost_surface.fill((200, 200, 200, 180))  # Semi-transparent gray
                     pygame.draw.rect(ghost_surface, (0, 0, 0), ghost_surface.get_rect(), 2)
                     
                     # Draw ghost letter
