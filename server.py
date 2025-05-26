@@ -1328,6 +1328,8 @@ class ScrabbleServer:
         # Fill racks outside the client lock to avoid deadlock
         for client in clients_copy:
             self._fill_rack(client)
+            # Send rack update to each client after filling
+            self._send_rack_update(client)
         # Start the timer
         self._start_timer()
         print("[DEBUG] Game initialization complete")
