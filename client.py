@@ -11,23 +11,15 @@ import time
 
 class ScrabbleClient:
     # Class constants
-    #TILE_SIZE = 40
-    TILE_SIZE = 30
+    TILE_SIZE = 40
     BOARD_SIZE = 15
-    MARGIN = 40
-    RACK_HEIGHT = TILE_SIZE + 20
-    INFO_HEIGHT = 60
-    BUTTON_MARGIN = 10
-    PLAYER_LIST_WIDTH = 300  # Width for player list
-    WIDTH = TILE_SIZE * BOARD_SIZE + MARGIN * 2 + PLAYER_LIST_WIDTH + 20  # Added width for player list
-    # Calculate button dimensions
-    button_spacing = int(10 * (TILE_SIZE / 40))  # Scale spacing with tile size
-    available_width = WIDTH - (2 * MARGIN)
-    num_buttons = 6  # Total number of buttons
-    total_spacing = button_spacing * (num_buttons - 1)
-    button_width = (available_width - total_spacing) // num_buttons
-    button_height = int(button_width * 0.35)  # Always 35% of button width
-    HEIGHT = TILE_SIZE * BOARD_SIZE + MARGIN * 2 + RACK_HEIGHT + INFO_HEIGHT + button_height + BUTTON_MARGIN * 3 + 40  # slightly taller
+    MARGIN = TILE_SIZE
+    RACK_HEIGHT = TILE_SIZE + MARGIN * 0.5
+    BUTTON_MARGIN = TILE_SIZE * 0.25
+    PLAYER_LIST_WIDTH = TILE_SIZE * 7.5
+    BOARD_START_X = MARGIN * 0.5 + 6 * TILE_SIZE + MARGIN * 0.5  # Start board after buttons
+    WIDTH = TILE_SIZE * BOARD_SIZE + MARGIN * 2 + PLAYER_LIST_WIDTH + TILE_SIZE * 6
+    HEIGHT = MARGIN + TILE_SIZE * BOARD_SIZE + TILE_SIZE + MARGIN * 0.25 + MARGIN * 0.5
     
     HOST = 'localhost'  # Default to localhost, will be overridden by user input
     PORT = 12345
@@ -157,11 +149,6 @@ class ScrabbleClient:
         # Move log
         self.move_log = []  # List of moves
         self.move_log_scroll = 0  # Scroll position for move log
-        # Calculate height to end above buttons
-        button_y = (self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + 
-                   self.RACK_HEIGHT + self.INFO_HEIGHT + 15 + 36 + 20)  # Button Y position
-        log_y = self.MARGIN + 150  # Start of move log
-        self.move_log_height = button_y - log_y - self.TILE_SIZE  # Height from log start to button area minus margin
         self.scroll_bar_rect = None  # Store scroll bar rectangle
         self.scroll_bar_dragging = False  # Track if scroll bar is being dragged
         self.scroll_bar_height = 0  # Height of the scroll bar
@@ -186,6 +173,11 @@ class ScrabbleClient:
         self.error_time = 0  # For auto-clearing error messages
 
         self.showing_unseen_tiles = False
+        self.scale_factor = 1.0
+        
+        bottom_y = self.MARGIN * 0.5 + self.BOARD_SIZE * self.TILE_SIZE + self.MARGIN * 0.5 + self.TILE_SIZE + 10 * self.scale_factor
+        log_y = self.MARGIN + 140 * self.scale_factor  # Start of move log
+        self.move_log_height = bottom_y - log_y  # Height from log start to button area minus margin
 
     def _update_font_sizes(self):
         """Update font sizes based on current tile size."""
@@ -197,10 +189,10 @@ class ScrabbleClient:
         self.font_size = int(24 * scale_factor)  # Main font for letters and special tiles
         self.score_font_size = int(16 * scale_factor)  # Score numbers for letter tiles
         self.button_font_size = int(30 * scale_factor)  # Button text - now scales with tile size
-        
-        # Fixed font sizes for other elements
-        self.info_font_size = 18  # Info text
-        self.title_font_size = 36  # Title text
+        self.info_font_size = int(18 * scale_factor)  # Info text
+        self.title_font_size = int(36 * scale_factor)  # Title text
+        self.header_font_size = int(24 * scale_factor)  # Smaller titles
+        self.small_button_font_size = int(20 * scale_factor)
         
         # Create font objects
         self.font = pygame.font.SysFont(None, self.font_size)
@@ -208,6 +200,8 @@ class ScrabbleClient:
         self.info_font = pygame.font.SysFont(None, self.info_font_size)
         self.button_font = pygame.font.SysFont(None, self.button_font_size)
         self.title_font = pygame.font.SysFont(None, self.title_font_size)
+        self.header_font = pygame.font.SysFont(None, self.header_font_size)
+        self.small_button_font = pygame.font.SysFont(None, self.small_button_font_size)
 
     def _initialize_special_tiles(self):
         """Initialize the special tiles grid."""
@@ -228,73 +222,35 @@ class ScrabbleClient:
         return special_tiles
 
     def _setup_buttons(self):
-        """Setup button rectangles and properties."""
-        # Calculate Y position: below board, rack, info panel, error box, and spacings
-        info_panel_height = self.INFO_HEIGHT
-        error_box_height = 36
-        spacing_above_error = 15  # space between info panel and error box
-        spacing_below_error = 20  # space between error box and buttons
-        button_y = (self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + 
-                   self.RACK_HEIGHT + info_panel_height + spacing_above_error + error_box_height + spacing_below_error)
+        """Set up the game buttons."""
+        # Calculate button dimensions
+        button_width = self.TILE_SIZE * 6
+        button_height = self.TILE_SIZE * 2
+        button_spacing = self.BUTTON_MARGIN
         
-        # Calculate button dimensions to span full width
-        button_spacing = int(10 * (self.TILE_SIZE / 40))  # Scale spacing with tile size
+        # Calculate starting position for buttons
+        start_x = self.MARGIN * 0.5
+        start_y = self.MARGIN * 0.5
         
-        # Calculate available width (excluding margins)
-        available_width = self.WIDTH - (2 * self.MARGIN)
+        # Create button rectangles
+        self.return_button = pygame.Rect(start_x, start_y, button_width, button_height)
+        start_y += button_height + button_spacing
         
-        # Calculate button width to fit all buttons with spacing
-        num_buttons = 6  # Total number of buttons
-        total_spacing = button_spacing * (num_buttons - 1)
-        button_width = (available_width - total_spacing) // num_buttons
-        button_height = int(button_width * 0.35)  # Always 35% of button width
+        self.send_button = pygame.Rect(start_x, start_y, button_width, button_height)
+        start_y += button_height + button_spacing
         
-        # Create buttons with calculated dimensions
-        self.return_button = pygame.Rect(
-            self.MARGIN, 
-            button_y, 
-            button_width, 
-            button_height
-        )
-        self.send_button = pygame.Rect(
-            self.MARGIN + button_width + button_spacing, 
-            button_y, 
-            button_width, 
-            button_height
-        )
-        self.exchange_button = pygame.Rect(
-            self.MARGIN + 2 * (button_width + button_spacing),
-            button_y,
-            button_width,
-            button_height
-        )
-        self.ready_button = pygame.Rect(
-            self.MARGIN + 3 * (button_width + button_spacing),
-            button_y,
-            button_width,
-            button_height
-        )
-        # Add shuffle button to the right of the pass button
-        self.shuffle_button = pygame.Rect(
-            self.MARGIN + 3 * (button_width + button_spacing),
-            button_y,
-            button_width,
-            button_height
-        )
-        # Add pass button to the right of the ready button
-        self.pass_button = pygame.Rect(
-            self.MARGIN + 4 * (button_width + button_spacing),
-            button_y,
-            button_width,
-            button_height
-        )
-        # Add unseen tiles button
-        self.unseen_tiles_button = pygame.Rect(
-            self.MARGIN + 5 * (button_width + button_spacing),
-            button_y,
-            button_width,
-            button_height
-        )
+        self.exchange_button = pygame.Rect(start_x, start_y, button_width, button_height)
+        start_y += button_height + button_spacing
+        
+        self.ready_button = pygame.Rect(start_x, start_y, button_width, button_height)
+        
+        self.shuffle_button = pygame.Rect(start_x, start_y, button_width, button_height)
+        start_y += button_height + button_spacing
+        
+        self.pass_button = pygame.Rect(start_x, start_y, button_width, button_height)
+        start_y += button_height + button_spacing
+        
+        self.unseen_tiles_button = pygame.Rect(start_x, start_y, button_width, button_height)
 
     def _draw_connection_screen(self):
         """Draw the connection screen with input fields."""
@@ -655,7 +611,7 @@ class ScrabbleClient:
                         self.move_log = data["moves"]
                         self._calculate_move_log_content_height()  # Calculate height after updating moves
                         # Scroll to bottom when new moves are added
-                        max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 30))
+                        max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 40 * self.scale_factor))
                         self.move_log_scroll = max_scroll
                     elif message_type == "rack_update":
                         print("Received rack update")
@@ -885,8 +841,8 @@ class ScrabbleClient:
         """Draw the game board, tile rack, info panel, and buttons."""
         for r in range(self.BOARD_SIZE):
             for c in range(self.BOARD_SIZE):
-                x = self.MARGIN + c * self.TILE_SIZE
-                y = self.MARGIN + r * self.TILE_SIZE
+                x = self.BOARD_START_X + c * self.TILE_SIZE
+                y = self.MARGIN * 0.5 + r * self.TILE_SIZE
                 rect = pygame.Rect(x, y, self.TILE_SIZE, self.TILE_SIZE)
 
                 # Determine what to display
@@ -955,14 +911,14 @@ class ScrabbleClient:
             # Calculate tile center position
             tile_center_x = mouse_x - self.drag_offset[0]
             tile_center_y = mouse_y - self.drag_offset[1]
-            col = (tile_center_x - self.MARGIN) // self.TILE_SIZE
-            row = (tile_center_y - self.MARGIN) // self.TILE_SIZE
+            col = int((tile_center_x - self.BOARD_START_X) // self.TILE_SIZE)
+            row = int((tile_center_y - self.MARGIN * 0.5) // self.TILE_SIZE)
             
             if 0 <= row < self.BOARD_SIZE and 0 <= col < self.BOARD_SIZE:
                 if self.board[row][col] == '' and (row, col) not in self.letter_buffer:
                     ghost_rect = pygame.Rect(
-                        self.MARGIN + col * self.TILE_SIZE,
-                        self.MARGIN + row * self.TILE_SIZE,
+                        self.BOARD_START_X + col * self.TILE_SIZE,
+                        self.MARGIN * 0.5 + row * self.TILE_SIZE,
                         self.TILE_SIZE,
                         self.TILE_SIZE
                     )
@@ -1043,8 +999,8 @@ class ScrabbleClient:
                 max_col = max(c for _, c in positions)
                 
                 # Draw rectangle around word
-                rect_x = self.MARGIN + min_col * self.TILE_SIZE
-                rect_y = self.MARGIN + min_row * self.TILE_SIZE
+                rect_x = self.BOARD_START_X + min_col * self.TILE_SIZE
+                rect_y = self.MARGIN * 0.5 + min_row * self.TILE_SIZE
                 rect_width = (max_col - min_col + 1) * self.TILE_SIZE
                 rect_height = (max_row - min_row + 1) * self.TILE_SIZE
                 
@@ -1058,24 +1014,22 @@ class ScrabbleClient:
                 # Calculate and draw score
                 score = self._calculate_word_score(word, positions)
                 score_text = self.font.render(str(score), True, color)
-
-                scaling_ratio = self.TILE_SIZE / 40
                 
                 # Determine score position based on word orientation and position
                 if is_horizontal:
                     # For horizontal words
                     if min_col == 0:  # Word starts at left edge
-                        score_x = rect_x + rect_width + 2 * scaling_ratio
+                        score_x = rect_x + rect_width + 2 * self.scale_factor
                     else:
-                        score_x = rect_x - score_text.get_width() - 2 * scaling_ratio
-                    score_y = rect_y + 2 * scaling_ratio
+                        score_x = rect_x - score_text.get_width() - 2 * self.scale_factor
+                    score_y = rect_y + 2 * self.scale_factor
                 else:
                     # For vertical words
-                    score_x = rect_x + 2 * scaling_ratio
+                    score_x = rect_x + 2 * self.scale_factor
                     if min_row == 0:  # Word starts at top edge
-                        score_y = rect_y + rect_height + 2 * scaling_ratio
+                        score_y = rect_y + rect_height + 2 * self.scale_factor
                     else:
-                        score_y = rect_y - 17 * scaling_ratio
+                        score_y = rect_y - 17 * self.scale_factor
                 
                 self.screen.blit(score_text, (score_x, score_y))
 
@@ -1093,8 +1047,8 @@ class ScrabbleClient:
                         max_col = max(c for _, c in positions)
                         
                         # Draw purple rectangle around word
-                        rect_x = self.MARGIN + min_col * self.TILE_SIZE
-                        rect_y = self.MARGIN + min_row * self.TILE_SIZE
+                        rect_x = self.BOARD_START_X + min_col * self.TILE_SIZE
+                        rect_y = self.MARGIN * 0.5 + min_row * self.TILE_SIZE
                         rect_width = (max_col - min_col + 1) * self.TILE_SIZE
                         rect_height = (max_row - min_row + 1) * self.TILE_SIZE
                         
@@ -1107,66 +1061,72 @@ class ScrabbleClient:
                         
                         # Determine score position based on word orientation and position
                         is_horizontal = min_row == max_row
-                        scaling_ratio = self.TILE_SIZE / 40
                         if is_horizontal:
                             # For horizontal words
                             if min_col == 0:  # Word starts at left edge
-                                score_x = rect_x + rect_width + 2 * scaling_ratio
+                                score_x = rect_x + rect_width + 2 * self.scale_factor
                             else:
-                                score_x = rect_x - score_text.get_width() - 2 * scaling_ratio
-                            score_y = rect_y + 2 * scaling_ratio
+                                score_x = rect_x - score_text.get_width() - 2 * self.scale_factor
+                            score_y = rect_y + 2 * self.scale_factor
                         else:
                             # For vertical words
-                            score_x = rect_x + 2 * scaling_ratio
+                            score_x = rect_x + 2 * self.scale_factor
                             if min_row == 0:  # Word starts at top edge
-                                score_y = rect_y + rect_height + 2 * scaling_ratio
+                                score_y = rect_y + rect_height + 2 * self.scale_factor
                             else:
-                                score_y = rect_y - 17 * scaling_ratio
+                                score_y = rect_y - 17 * self.scale_factor
                         
                         self.screen.blit(score_text, (score_x, score_y))
 
     def _draw_tile_rack(self):
         """Draw the player's tile rack."""
-        rack_y = self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + 10
+        # Calculate the rightmost position of the rack
+        rack_right = self.BOARD_START_X + self.BOARD_SIZE * self.TILE_SIZE - 5 * self.scale_factor
+        rack_y = self.MARGIN * 0.5 + self.BOARD_SIZE * self.TILE_SIZE + self.MARGIN * 0.5 + 5 * self.scale_factor
         
         # Calculate rack width based on whether we're dragging from board or rack
         if self.dragging_tile:
             if self.dragging_from_board:
                 # When dragging from board, add space for ghost tile
-                rack_width = len(self.tile_rack) * (self.TILE_SIZE + 5) + 5
+                rack_width = len(self.tile_rack) * (self.TILE_SIZE + 5 * self.scale_factor) + 5 * self.scale_factor
                 is_dragging_to_rack = False
                 drop_index = None
                 mouse_x, mouse_y = pygame.mouse.get_pos()
-                if rack_y <= mouse_y <= rack_y + self.TILE_SIZE:
-                    rack_x = self.MARGIN + len(self.tile_rack) * (self.TILE_SIZE + 5)
-                    if mouse_x >= self.MARGIN and mouse_x <= rack_x + self.TILE_SIZE + 5:
+                tile_center_x = mouse_x - self.drag_offset[0]
+                tile_center_y = mouse_y - self.drag_offset[1]
+                if rack_y <= tile_center_y <= rack_y + self.TILE_SIZE:
+                    if tile_center_x <= rack_right and tile_center_x >= rack_right - rack_width:
                         # Calculate drop index based on tile center position
-                        tile_center_x = mouse_x - self.drag_offset[0]
-                        drop_index = (tile_center_x - self.MARGIN) // (self.TILE_SIZE + 5)
+                        drop_index = int((rack_right - tile_center_x) // (self.TILE_SIZE + 5 * self.scale_factor))
                         drop_index = max(0, min(drop_index, len(self.tile_rack)))
-                        rack_width += self.TILE_SIZE + 5  # Add space for ghost tile
+                        rack_width += self.TILE_SIZE + 5 * self.scale_factor  # Add space for ghost tile
                         is_dragging_to_rack = True
             else:
                 # When dragging from rack, check if we're hovering over the rack
                 mouse_x, mouse_y = pygame.mouse.get_pos()
-                if rack_y <= mouse_y <= rack_y + self.TILE_SIZE:
+                tile_center_x = mouse_x - self.drag_offset[0]
+                tile_center_y = mouse_y - self.drag_offset[1]
+                if self.MARGIN * 0.5 + self.BOARD_SIZE * self.TILE_SIZE <= tile_center_y:
                     # When hovering over rack, keep full width but don't show ghost
-                    rack_width = len(self.tile_rack) * (self.TILE_SIZE + 5) + 5
+                    rack_width = len(self.tile_rack) * (self.TILE_SIZE + 5 * self.scale_factor) + 5 * self.scale_factor
                     is_dragging_to_rack = True
-                    drop_index = (mouse_x - self.MARGIN) // (self.TILE_SIZE + 5)
+                    drop_index = int((rack_right - tile_center_x) // (self.TILE_SIZE + 5 * self.scale_factor))
                     drop_index = max(0, min(drop_index, len(self.tile_rack)))
                 else:
                     # When not hovering over rack, remove the dragged tile's space
-                    rack_width = (len(self.tile_rack) - 1) * (self.TILE_SIZE + 5) + 5
+                    rack_width = (len(self.tile_rack) - 1) * (self.TILE_SIZE + 5 * self.scale_factor) + 5 * self.scale_factor
                     is_dragging_to_rack = False
                     drop_index = None
         else:
-            rack_width = len(self.tile_rack) * (self.TILE_SIZE + 5) + 5
+            rack_width = len(self.tile_rack) * (self.TILE_SIZE + 5 * self.scale_factor) + 5 * self.scale_factor
             is_dragging_to_rack = False
             drop_index = None
         
+        # Calculate the leftmost position of the rack
+        rack_x = rack_right - rack_width + 10 * self.scale_factor
+        
         # Draw rack background
-        rack_bg = pygame.Rect(self.MARGIN - 5, rack_y - 5, rack_width, self.TILE_SIZE + 10)
+        rack_bg = pygame.Rect(rack_x - 5 * self.scale_factor, rack_y - 5 * self.scale_factor, rack_width, self.TILE_SIZE + 10 * self.scale_factor)
         pygame.draw.rect(self.screen, (220, 220, 220), rack_bg)
         pygame.draw.rect(self.screen, (100, 100, 100), rack_bg, 2)
         
@@ -1178,13 +1138,14 @@ class ScrabbleClient:
                 
             # Calculate x position, adjusting for the dragged tile's position
             if is_dragging_to_rack and i >= drop_index and self.dragging_from_board:
-                x = self.MARGIN + (i + 1) * (self.TILE_SIZE + 5)  # Shift tiles right of drop position
+                # Position tiles from right to left, with the right edge of the first tile at rack_right
+                x = rack_right - self.TILE_SIZE - (i + 1) * (self.TILE_SIZE + 5 * self.scale_factor)
             else:
                 # When dragging from rack and not hovering over rack, adjust positions to fill the gap
                 if self.dragging_tile and not self.dragging_from_board and not is_dragging_to_rack and i > self.drag_current_index:
-                    x = self.MARGIN + (i - 1) * (self.TILE_SIZE + 5)
+                    x = rack_right - self.TILE_SIZE - (i - 1) * (self.TILE_SIZE + 5 * self.scale_factor)
                 else:
-                    x = self.MARGIN + i * (self.TILE_SIZE + 5)
+                    x = rack_right - self.TILE_SIZE - i * (self.TILE_SIZE + 5 * self.scale_factor)
             
             rect = pygame.Rect(x, rack_y, self.TILE_SIZE, self.TILE_SIZE)
             
@@ -1207,7 +1168,7 @@ class ScrabbleClient:
             # Always show 0 for blank tiles
             score = self.LETTER_VALUES.get('?') if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
             score_text = self.score_font.render(str(score), True, (80, 80, 80))
-            score_rect = score_text.get_rect(bottomright=(x + self.TILE_SIZE - 3, rack_y + self.TILE_SIZE - 2))
+            score_rect = score_text.get_rect(bottomright=(x + self.TILE_SIZE - 3 * self.scale_factor, rack_y + self.TILE_SIZE - 2 * self.scale_factor))
             self.screen.blit(score_text, score_rect)
         
         # Draw the tile being dragged
@@ -1242,46 +1203,44 @@ class ScrabbleClient:
                 score = self.LETTER_VALUES.get('?') if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
             
             score_text = self.score_font.render(str(score), True, (80, 80, 80))
-            score_rect = score_text.get_rect(bottomright=(x + self.TILE_SIZE - 3, y + self.TILE_SIZE - 2))
+            score_rect = score_text.get_rect(bottomright=(x + self.TILE_SIZE - 3 * self.scale_factor, y + self.TILE_SIZE - 2 * self.scale_factor))
             self.screen.blit(score_text, score_rect)
 
     def _draw_info_panel(self):
         """Draw the information panel showing tiles remaining and rack count."""
-        info_y = self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + self.RACK_HEIGHT + 5
-        
-        # Calculate width to end before move log with margin
-        move_log_x = self.WIDTH - self.PLAYER_LIST_WIDTH - 20  # X position of move log
-        info_width = move_log_x - self.MARGIN - 20  # Width from left margin to move log minus margin
+        info_y = self.MARGIN * 0.5 + (2 * self.TILE_SIZE + self.BUTTON_MARGIN) * 6
+        info_width = 6 * self.TILE_SIZE
+        info_height = self.MARGIN * 0.5 + self.BOARD_SIZE * self.TILE_SIZE - info_y
         
         # Background for info panel
-        info_bg = pygame.Rect(self.MARGIN, info_y, info_width, self.INFO_HEIGHT - 10)
+        info_bg = pygame.Rect(self.MARGIN * 0.5, info_y, info_width, info_height)
         pygame.draw.rect(self.screen, (240, 240, 240), info_bg)
         pygame.draw.rect(self.screen, (150, 150, 150), info_bg, 1)
         
         # Calculate column positions
-        first_col_x = self.MARGIN + 10
-        second_col_x = self.MARGIN + info_width // 2
+        first_col_x = self.MARGIN * 0.5 + 10 * self.scale_factor
+        second_col_x = self.MARGIN * 0.5 + info_width // 2
         
         # First column: Tiles remaining and rack count
         tiles_text = f"Tiles in bag: {self.tiles_remaining}"
         tiles_surface = self.info_font.render(tiles_text, True, (0, 0, 0))
-        self.screen.blit(tiles_surface, (first_col_x, info_y + 5))
+        self.screen.blit(tiles_surface, (first_col_x, info_y + 10 * self.scale_factor))
         
         rack_text = f"Your tiles: {len(self.tile_rack)}/7"
         rack_surface = self.info_font.render(rack_text, True, (0, 0, 0))
-        self.screen.blit(rack_surface, (first_col_x, info_y + 25))
+        self.screen.blit(rack_surface, (first_col_x, info_y + 35 * self.scale_factor))
         
         # Second column: Buffer info and turn status
         if self.letter_buffer:
             buffer_text = f"Placed letters: {len(self.letter_buffer)}"
             buffer_surface = self.info_font.render(buffer_text, True, (0, 0, 0))
-            self.screen.blit(buffer_surface, (second_col_x, info_y + 5))
+            self.screen.blit(buffer_surface, (second_col_x, info_y + 10 * self.scale_factor))
         
         # Show waiting message if not started
         if not self.game_started:
-            wait_text = "Waiting for all players to be ready..."
+            wait_text = "Waiting..."
             wait_surface = self.info_font.render(wait_text, True, (200, 0, 0))
-            self.screen.blit(wait_surface, (second_col_x, info_y + 25))
+            self.screen.blit(wait_surface, (second_col_x, info_y + 35 * self.scale_factor))
         # Show "Your turn" message if it's the current player's turn
         elif self.game_started and not self.game_ended:
             # Find the current player's username
@@ -1289,21 +1248,22 @@ class ScrabbleClient:
             if current_player and current_player.get("username") == self.username:
                 turn_text = "Your turn"
                 turn_surface = self.info_font.render(turn_text, True, (0, 200, 0))  # Green color
-                self.screen.blit(turn_surface, (second_col_x, info_y + 25))
+                self.screen.blit(turn_surface, (second_col_x, info_y + 35 * self.scale_factor))
 
     def _draw_error_box(self):
         """Draw a separate error box below the info panel if there is an error message."""
         if not self.error_message:
             return
         # Box dimensions
-        move_log_x = self.WIDTH - self.PLAYER_LIST_WIDTH - 20  # X position of move log
-        box_width = move_log_x - self.MARGIN - 20  # Width from left margin to move log minus margin
-        box_height = 36
-        box_x = self.MARGIN
-        spacing_above_error = 15  # space between info panel and error box
-        # Place the box just below the info panel, above the rack and buttons
-        info_y = self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + self.RACK_HEIGHT + self.INFO_HEIGHT
-        box_y = info_y + spacing_above_error
+
+        rack_right = self.BOARD_START_X + self.BOARD_SIZE * self.TILE_SIZE - 5 * self.scale_factor
+        rack_width = 7 * (self.TILE_SIZE + 5 * self.scale_factor) + 5 * self.scale_factor
+        rack_x = rack_right - rack_width + 10 * self.scale_factor
+
+        box_width = rack_x - 5 * self.scale_factor - self.MARGIN  # Width from left margin to move log minus margin
+        box_height = self.TILE_SIZE + 10 * self.scale_factor
+        box_x = self.MARGIN * 0.5  # X position of move log
+        box_y = self.MARGIN * 0.5 + self.BOARD_SIZE * self.TILE_SIZE + self.MARGIN * 0.5
         # Draw box background and border
         pygame.draw.rect(self.screen, (255, 240, 240), (box_x, box_y, box_width, box_height))
         pygame.draw.rect(self.screen, (200, 0, 0), (box_x, box_y, box_width, box_height), 2)
@@ -1323,7 +1283,7 @@ class ScrabbleClient:
         rest_text = self.button_font.render(return_text[1:], True, (0, 0, 0))
         # Draw first letter with underline
         first_rect = first_letter.get_rect(midleft=self.return_button.midleft)
-        first_rect.x += 10  # Add some padding
+        first_rect.x += 10 * self.scale_factor  # Add some padding
         self.screen.blit(first_letter, first_rect)
         pygame.draw.line(self.screen, (0, 0, 0), 
                         (first_rect.left, first_rect.bottom),
@@ -1345,7 +1305,7 @@ class ScrabbleClient:
         rest_text = self.button_font.render(send_text[1:], True, (0, 0, 0))
         # Draw first letter with underline
         first_rect = first_letter.get_rect(midleft=self.send_button.midleft)
-        first_rect.x += 10  # Add some padding
+        first_rect.x += 10 * self.scale_factor  # Add some padding
         self.screen.blit(first_letter, first_rect)
         pygame.draw.line(self.screen, (0, 0, 0), 
                         (first_rect.left, first_rect.bottom),
@@ -1367,7 +1327,7 @@ class ScrabbleClient:
         rest_text = self.button_font.render(exchange_text[1:], True, (0, 0, 0))
         # Draw first letter with underline
         first_rect = first_letter.get_rect(midleft=self.exchange_button.midleft)
-        first_rect.x += 10  # Add some padding
+        first_rect.x += 10 * self.scale_factor  # Add some padding
         self.screen.blit(first_letter, first_rect)
         pygame.draw.line(self.screen, (0, 0, 0), 
                         (first_rect.left, first_rect.bottom),
@@ -1387,7 +1347,7 @@ class ScrabbleClient:
             rest_text = self.button_font.render(ready_text[1:], True, (0, 0, 0))
             # Draw first letter with underline
             first_rect = first_letter.get_rect(midleft=self.ready_button.midleft)
-            first_rect.x += 10  # Add some padding
+            first_rect.x += 10 * self.scale_factor  # Add some padding
             self.screen.blit(first_letter, first_rect)
             pygame.draw.line(self.screen, (0, 0, 0), 
                             (first_rect.left, first_rect.bottom),
@@ -1407,7 +1367,7 @@ class ScrabbleClient:
             rest_text = self.button_font.render(pass_text[1:], True, (0, 0, 0))
             # Draw first letter with underline
             first_rect = first_letter.get_rect(midleft=self.pass_button.midleft)
-            first_rect.x += 10  # Add some padding
+            first_rect.x += 10 * self.scale_factor  # Add some padding
             self.screen.blit(first_letter, first_rect)
             pygame.draw.line(self.screen, (0, 0, 0), 
                             (first_rect.left, first_rect.bottom),
@@ -1427,7 +1387,7 @@ class ScrabbleClient:
             rest_text = self.button_font.render(shuffle_text[1:], True, (0, 0, 0))
             # Draw first letter with underline
             first_rect = first_letter.get_rect(midleft=self.shuffle_button.midleft)
-            first_rect.x += 10  # Add some padding
+            first_rect.x += 10 * self.scale_factor  # Add some padding
             self.screen.blit(first_letter, first_rect)
             pygame.draw.line(self.screen, (0, 0, 0), 
                             (first_rect.left, first_rect.bottom),
@@ -1447,7 +1407,7 @@ class ScrabbleClient:
             rest_text = self.button_font.render(unseen_text[1:], True, (0, 0, 0))
             # Draw first letter with underline
             first_rect = first_letter.get_rect(midleft=self.unseen_tiles_button.midleft)
-            first_rect.x += 10  # Add some padding
+            first_rect.x += 10 * self.scale_factor  # Add some padding
             self.screen.blit(first_letter, first_rect)
             pygame.draw.line(self.screen, (0, 0, 0), 
                             (first_rect.left, first_rect.bottom),
@@ -1459,22 +1419,21 @@ class ScrabbleClient:
     def draw_player_list(self):
         """Draw player list in the UI."""
         # Position in top right corner, with more centered margins
-        player_x = self.WIDTH - self.PLAYER_LIST_WIDTH - 20  # Increased left margin
-        player_y = self.MARGIN
+        player_x = self.WIDTH - self.PLAYER_LIST_WIDTH - 20 * self.scale_factor  # Increased left margin
+        player_y = self.MARGIN * 0.5
         
         # Draw background
         pygame.draw.rect(self.screen, (240, 240, 240), 
-                        (player_x, player_y, self.PLAYER_LIST_WIDTH, 150))
+                        (player_x, player_y, self.PLAYER_LIST_WIDTH, 150 * self.scale_factor))
         pygame.draw.rect(self.screen, (150, 150, 150), 
-                        (player_x, player_y, self.PLAYER_LIST_WIDTH, 150), 1)
+                        (player_x, player_y, self.PLAYER_LIST_WIDTH, 150 * self.scale_factor), 1)
         
         # Draw title
-        title_font = pygame.font.SysFont(None, 20)
-        title = title_font.render("Players", True, (0, 0, 0))
-        title_rect = title.get_rect(centerx=player_x + self.PLAYER_LIST_WIDTH // 2, y=player_y + 5)
+        title = self.header_font.render("Players", True, (0, 0, 0))
+        title_rect = title.get_rect(centerx=player_x + self.PLAYER_LIST_WIDTH // 2, y=player_y + 12 * self.scale_factor)
         self.screen.blit(title, title_rect)
 
-        y_pos = player_y + 30
+        y_pos = player_y + 40 * self.scale_factor
         # Draw player list
         for i, player in enumerate(self.players):
             if not self.game_started:
@@ -1491,7 +1450,7 @@ class ScrabbleClient:
                 current_line = []
                 for word in words:
                     test_line = ' '.join(current_line + [word])
-                    if self.info_font.size(test_line)[0] <= self.PLAYER_LIST_WIDTH - 20:  # 20px margin
+                    if self.info_font.size(test_line)[0] <= self.PLAYER_LIST_WIDTH - 20 * self.scale_factor:  # 20px margin
                         current_line.append(word)
                     else:
                         lines.append(' '.join(current_line))
@@ -1504,7 +1463,7 @@ class ScrabbleClient:
                     player_surface = self.info_font.render(line, True, color)
                     player_rect = player_surface.get_rect(x=player_x + 10, y=y_pos)
                     self.screen.blit(player_surface, player_rect)
-                    y_pos += 15
+                    y_pos += 15 * self.scale_factor
             else:
                 # After game start, show points, turn, and timer
                 color = (0, 200, 0) if player["current_turn"] else (0, 0, 0)
@@ -1522,7 +1481,7 @@ class ScrabbleClient:
                 current_line = []
                 for word in words:
                     test_line = ' '.join(current_line + [word])
-                    if self.info_font.size(test_line)[0] <= self.PLAYER_LIST_WIDTH - 20:  # 20px margin
+                    if self.info_font.size(test_line)[0] <= self.PLAYER_LIST_WIDTH - 20 * self.scale_factor:  # 20px margin
                         current_line.append(word)
                     else:
                         lines.append(' '.join(current_line))
@@ -1533,14 +1492,14 @@ class ScrabbleClient:
                 # Draw each line
                 for line in lines:
                     player_surface = self.info_font.render(line, True, color)
-                    player_rect = player_surface.get_rect(x=player_x + 10, y=y_pos)
+                    player_rect = player_surface.get_rect(x=player_x + 10 * self.scale_factor, y=y_pos)
                     self.screen.blit(player_surface, player_rect)
-                    y_pos += 15
-                y_pos -= 15
+                    y_pos += 15 * self.scale_factor
+                y_pos -= 15 * self.scale_factor
                 
                 line = lines[-1]
                 player_surface = self.info_font.render(line, True, color)
-                player_rect = player_surface.get_rect(x=player_x + 10, y=y_pos)
+                player_rect = player_surface.get_rect(x=player_x + 10 * self.scale_factor, y=y_pos)
                 
                 # Draw timer
                 time_remaining = self.player_timers.get(player['username'], 0)
@@ -1573,35 +1532,36 @@ class ScrabbleClient:
                     timer_surface = self.info_font.render(time_text, True, timer_color)
                     
                     # Calculate available width for timer
-                    available_width = self.PLAYER_LIST_WIDTH - player_rect.width - 20  # 20px padding
+                    available_width = self.PLAYER_LIST_WIDTH - player_rect.width - 20 * self.scale_factor  # 20px padding
                     
                     # If timer fits to the right, place it there
                     if timer_surface.get_width() <= available_width:
                         timer_rect = timer_surface.get_rect(
-                            left=player_rect.right + 10,
+                            left=player_rect.right + 10 * self.scale_factor,
                             centery=player_rect.centery
                         )
-                        y_pos += 15  # Move down for next player
+                        y_pos += 15 * self.scale_factor  # Move down for next player
                     else:
                         # Otherwise place it below
                         timer_rect = timer_surface.get_rect(
                             left=player_rect.left,
-                            top=player_rect.top + 15
+                            top=player_rect.top + 15 * self.scale_factor
                         )
-                        y_pos = timer_rect.bottom + 5  # Move down for next player
+                        y_pos = timer_rect.bottom + 5 * self.scale_factor  # Move down for next player
                     
                     self.screen.blit(timer_surface, timer_rect)
                 else:
                     # If time is infinite, just move to next player
-                    y_pos += 15
+                    y_pos += 15 * self.scale_factor
 
     def _handle_rack_click(self, x, y):
         """Handle clicks on the tile rack."""
-        rack_y = self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + 10
+        rack_y = self.MARGIN * 0.5 + self.BOARD_SIZE * self.TILE_SIZE + self.MARGIN * 0.5 + 5 * self.scale_factor
+        rack_right = self.BOARD_START_X + self.BOARD_SIZE * self.TILE_SIZE - 5 * self.scale_factor
         
         if rack_y <= y <= rack_y + self.TILE_SIZE:
             for i in range(len(self.tile_rack)):
-                rect = pygame.Rect(self.MARGIN + i * (self.TILE_SIZE + 5), rack_y, self.TILE_SIZE, self.TILE_SIZE)
+                rect = pygame.Rect(rack_right - self.TILE_SIZE - i * (self.TILE_SIZE + 5 * self.scale_factor), rack_y, self.TILE_SIZE, self.TILE_SIZE)
                 if rect.collidepoint(x, y):
                     if self.exchange_mode:
                         # Toggle tile selection for exchange
@@ -1616,7 +1576,7 @@ class ScrabbleClient:
                         self.drag_current_index = i
                         self.drag_start_pos = (x, y)
                         # Calculate offset from mouse to tile center
-                        tile_center_x = self.MARGIN + i * (self.TILE_SIZE + 5) + self.TILE_SIZE // 2
+                        tile_center_x = rack_right - i * (self.TILE_SIZE + 5) - self.TILE_SIZE // 2
                         tile_center_y = rack_y + self.TILE_SIZE // 2
                         self.drag_offset = (x - tile_center_x, y - tile_center_y)
                     return True
@@ -1628,8 +1588,8 @@ class ScrabbleClient:
             self._set_error("Game has not started yet. Wait for all players to be ready.")
             return
             
-        col = (x - self.MARGIN) // self.TILE_SIZE
-        row = (y - self.MARGIN) // self.TILE_SIZE
+        col = int((x - self.BOARD_START_X) // self.TILE_SIZE)
+        row = int((y - self.MARGIN * 0.5) // self.TILE_SIZE)
         
         if 0 <= row < self.BOARD_SIZE and 0 <= col < self.BOARD_SIZE:
             current_time = pygame.time.get_ticks()
@@ -1693,8 +1653,8 @@ class ScrabbleClient:
                 self.drag_board_pos = (row, col)
                 self.drag_start_pos = (x, y)
                 # Calculate offset from mouse to tile center
-                tile_center_x = self.MARGIN + col * self.TILE_SIZE + self.TILE_SIZE // 2
-                tile_center_y = self.MARGIN + row * self.TILE_SIZE + self.TILE_SIZE // 2
+                tile_center_x = self.BOARD_START_X + col * self.TILE_SIZE + self.TILE_SIZE // 2
+                tile_center_y = self.MARGIN * 0.5 + row * self.TILE_SIZE + self.TILE_SIZE // 2
                 self.drag_offset = (x - tile_center_x, y - tile_center_y)
                 # Don't select the board cell when starting a drag
                 self.selected_board_cell = None
@@ -1970,10 +1930,11 @@ class ScrabbleClient:
             if distance >= self.drag_threshold:
                 if not self.dragging_from_board:
                     # Handle rack tile dragging
-                    rack_y = self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + 10
+                    rack_y = self.MARGIN * 0.5 + self.BOARD_SIZE * self.TILE_SIZE + 10
+                    rack_right = self.BOARD_START_X + self.BOARD_SIZE * self.TILE_SIZE - 5 * self.scale_factor
                     # Calculate new index based on tile center position
                     tile_center_x = x - self.drag_offset[0]
-                    new_index = (tile_center_x - self.MARGIN) // (self.TILE_SIZE + 5)
+                    new_index = int((rack_right - tile_center_x) // (self.TILE_SIZE + 5))
                     new_index = max(0, min(new_index, len(self.tile_rack) - 1))
                     
                     if new_index != self.drag_current_index:
@@ -1984,11 +1945,11 @@ class ScrabbleClient:
         
         # Handle scroll bar dragging
         if self.scroll_bar_dragging and self.scroll_bar_rect:
-            log_y = self.MARGIN + 150
+            log_y = self.MARGIN + 140 * self.scale_factor
             # Calculate new scroll position based on mouse position
-            relative_y = y - log_y - 30 - self.scroll_bar_offset
-            max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 30))
-            scroll_ratio = relative_y / (self.move_log_height - 30 - self.scroll_bar_height)
+            relative_y = y - log_y - 40 * self.scale_factor - self.scroll_bar_offset
+            max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 40 * self.scale_factor))
+            scroll_ratio = relative_y / (self.move_log_height - 40 * self.scale_factor - self.scroll_bar_height)
             new_scroll = int(scroll_ratio * max_scroll)
             self.move_log_scroll = max(0, min(max_scroll, new_scroll))
 
@@ -2015,17 +1976,19 @@ class ScrabbleClient:
                             self.selected_board_cell = None
                 else:
                     # Handle drag release
+                    rack_right = self.BOARD_START_X + self.BOARD_SIZE * self.TILE_SIZE - 5 * self.scale_factor
+                    rack_y = self.MARGIN * 0.5 + self.BOARD_SIZE * self.TILE_SIZE + self.MARGIN * 0.5 + 5 * self.scale_factor
+                    rack_width = len(self.tile_rack) * (self.TILE_SIZE + 5 * self.scale_factor) + 5 * self.scale_factor
+                    
                     if self.dragging_from_board:
                         # Check if we're over the rack
-                        rack_y = self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + 10
                         tile_center_y = mouse_y - self.drag_offset[1]
                         if rack_y <= tile_center_y <= rack_y + self.TILE_SIZE:
                             # Calculate rack position based on tile center
                             tile_center_x = mouse_x - self.drag_offset[0]
-                            rack_x = self.MARGIN + len(self.tile_rack) * (self.TILE_SIZE + 5)
-                            if tile_center_x >= self.MARGIN and tile_center_x <= rack_x + self.TILE_SIZE + 5:
+                            if tile_center_x <= rack_right and tile_center_x >= rack_right - rack_width:
                                 # Calculate drop index based on tile center position
-                                drop_index = (tile_center_x - self.MARGIN) // (self.TILE_SIZE + 5)
+                                drop_index = int((rack_right - tile_center_x) // (self.TILE_SIZE + 5 * self.scale_factor))
                                 drop_index = max(0, min(drop_index, len(self.tile_rack)))
                                 
                                 # Return tile to rack at the drop position
@@ -2042,8 +2005,8 @@ class ScrabbleClient:
                             # Check if we're over a valid board position
                             tile_center_x = mouse_x - self.drag_offset[0]
                             tile_center_y = mouse_y - self.drag_offset[1]
-                            col = (tile_center_x - self.MARGIN) // self.TILE_SIZE
-                            row = (tile_center_y - self.MARGIN) // self.TILE_SIZE
+                            col = int((tile_center_x - self.BOARD_START_X) // self.TILE_SIZE)
+                            row = int((tile_center_y - self.MARGIN * 0.5) // self.TILE_SIZE)
                             if 0 <= row < self.BOARD_SIZE and 0 <= col < self.BOARD_SIZE:
                                 # If we're over a different position and it's empty
                                 if (row, col) != self.drag_board_pos and self.board[row][col] == '' and (row, col) not in self.letter_buffer:
@@ -2062,8 +2025,8 @@ class ScrabbleClient:
                         # Check if we're over the board
                         tile_center_x = mouse_x - self.drag_offset[0]
                         tile_center_y = mouse_y - self.drag_offset[1]
-                        col = (tile_center_x - self.MARGIN) // self.TILE_SIZE
-                        row = (tile_center_y - self.MARGIN) // self.TILE_SIZE
+                        col = int((tile_center_x - self.BOARD_START_X) // self.TILE_SIZE)
+                        row = int((tile_center_y - self.MARGIN * 0.5) // self.TILE_SIZE)
                         if 0 <= row < self.BOARD_SIZE and 0 <= col < self.BOARD_SIZE:
                             # If the board position is empty
                             if self.board[row][col] == '' and (row, col) not in self.letter_buffer:
@@ -2187,27 +2150,25 @@ class ScrabbleClient:
     def _adjust_tile_size(self, delta):
         """Adjust the tile size and update all dependent measurements."""
         new_size = self.TILE_SIZE + delta
-        if 20 <= new_size <= 60:  # Limit tile size between 30 and 60
+        if 30 <= new_size <= 70:  # Limit tile size between 30 and 70
             self.TILE_SIZE = new_size
+            self.scale_factor = self.TILE_SIZE / 40
             # Update dependent measurements
-            self.RACK_HEIGHT = self.TILE_SIZE + 20
-        
-            # Calculate button dimensions to span full width
-            button_spacing = int(10 * (self.TILE_SIZE / 40))  # Scale spacing with tile size
-            
-            # Calculate available width (excluding margins)
-            available_width = self.WIDTH - (2 * self.MARGIN)
             
             # Calculate button width to fit all buttons with spacing
-            num_buttons = 6  # Total number of buttons
-            total_spacing = button_spacing * (num_buttons - 1)
-            button_width = (available_width - total_spacing) // num_buttons
-            button_height = int(button_width * 0.35)  # Always 35% of button width
+            button_width = self.TILE_SIZE * 6
+            button_height = self.TILE_SIZE * 2
 
-            self.WIDTH = self.TILE_SIZE * self.BOARD_SIZE + self.MARGIN * 2 + self.PLAYER_LIST_WIDTH + 20
-            self.HEIGHT = (self.TILE_SIZE * self.BOARD_SIZE + self.MARGIN * 2 + 
-                          self.RACK_HEIGHT + self.INFO_HEIGHT + button_height + 
-                          self.BUTTON_MARGIN * 3 + 40)
+            self.MARGIN = self.TILE_SIZE
+            self.INFO_HEIGHT = self.TILE_SIZE * 1.5
+            self.BUTTON_MARGIN = self.TILE_SIZE * 0.25
+            self.PLAYER_LIST_WIDTH = self.TILE_SIZE * 7.5
+            self.RACK_HEIGHT = self.TILE_SIZE + self.MARGIN * 0.5
+
+            self.WIDTH = self.TILE_SIZE * self.BOARD_SIZE + self.MARGIN * 2 + self.PLAYER_LIST_WIDTH + button_width
+            self.HEIGHT = self.MARGIN + self.TILE_SIZE * self.BOARD_SIZE + self.TILE_SIZE + 10 * self.scale_factor + self.MARGIN * 0.5
+            
+            self.BOARD_START_X = self.MARGIN * 0.5 + button_width + self.MARGIN * 0.5  # Start board after buttons
             
             # Resize the window
             self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
@@ -2216,10 +2177,9 @@ class ScrabbleClient:
             self._update_font_sizes()
             
             # Recalculate move log height
-            button_y = (self.MARGIN + self.BOARD_SIZE * self.TILE_SIZE + 
-                       self.RACK_HEIGHT + self.INFO_HEIGHT + 15 + 36 + 20)
-            log_y = self.MARGIN + 150
-            self.move_log_height = button_y - log_y - self.TILE_SIZE
+            bottom_y = self.MARGIN * 0.5 + self.BOARD_SIZE * self.TILE_SIZE + self.MARGIN * 0.5 + self.TILE_SIZE + 10 * self.scale_factor
+            log_y = self.MARGIN + 140 * self.scale_factor
+            self.move_log_height = bottom_y - log_y
             
             # Update button positions
             self._setup_buttons()
@@ -2235,20 +2195,20 @@ class ScrabbleClient:
         
         self.move_log_content_height = content_height
         # Ensure scroll position is within bounds
-        max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 30))
+        max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 40 * self.scale_factor))
         self.move_log_scroll = min(max_scroll, max(0, self.move_log_scroll))
 
     def _handle_mouse_wheel(self, y):
         """Handle mouse wheel scrolling."""
         # Check if mouse is over move log area
-        log_x = self.WIDTH - self.PLAYER_LIST_WIDTH - 20
-        log_y = self.MARGIN + 150
+        log_x = self.WIDTH - self.PLAYER_LIST_WIDTH - 20 * self.scale_factor
+        log_y = self.MARGIN + 140 * self.scale_factor
         mouse_pos = pygame.mouse.get_pos()
         if (log_x <= mouse_pos[0] <= log_x + self.PLAYER_LIST_WIDTH and 
             log_y <= mouse_pos[1] <= log_y + self.move_log_height):
             
             # Calculate max scroll using stored content height
-            max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 30))
+            max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 40 * self.scale_factor))
             
             # Update scroll position with bounds checking
             new_scroll = self.move_log_scroll - y * 30
@@ -2390,7 +2350,7 @@ class ScrabbleClient:
                 lines = []
                 current_line = []
                 for word in words:
-                    if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
+                    if len(' '.join(current_line + [word])) * 6 * self.scale_factor < self.PLAYER_LIST_WIDTH - 40 * self.scale_factor:
                         current_line.append(word)
                     else:
                         lines.append(' '.join(current_line))
@@ -2413,7 +2373,7 @@ class ScrabbleClient:
             lines = []
             current_line = []
             for word in words:
-                if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
+                if len(' '.join(current_line + [word])) * 6 * self.scale_factor < self.PLAYER_LIST_WIDTH - 40 * self.scale_factor:
                     current_line.append(word)
                 else:
                     lines.append(' '.join(current_line))
@@ -2429,7 +2389,7 @@ class ScrabbleClient:
             lines = []
             current_line = []
             for word in words:
-                if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
+                if len(' '.join(current_line + [word])) * 6 * self.scale_factor < self.PLAYER_LIST_WIDTH - 40 * self.scale_factor:
                     current_line.append(word)
                 else:
                     lines.append(' '.join(current_line))
@@ -2439,13 +2399,13 @@ class ScrabbleClient:
             move_height += len(lines) * 15
             move_height += 2  # Space after exchange move
         
-        return move_height
+        return move_height * self.scale_factor
 
     def draw_move_log(self):
         """Draw the move log box."""
         # Position below player list
-        log_x = self.WIDTH - self.PLAYER_LIST_WIDTH - 20
-        log_y = self.MARGIN + 150  # Below player list
+        log_x = self.WIDTH - self.PLAYER_LIST_WIDTH - 20 * self.scale_factor
+        log_y = self.MARGIN + 140 * self.scale_factor  # Below player list
         
         # Calculate content height before drawing
         self._calculate_move_log_content_height()
@@ -2457,24 +2417,23 @@ class ScrabbleClient:
                         (log_x, log_y, self.PLAYER_LIST_WIDTH, self.move_log_height), 1)
         
         # Draw title
-        title_font = pygame.font.SysFont(None, 20)
-        title = title_font.render("Move Log", True, (0, 0, 0))
-        title_rect = title.get_rect(centerx=log_x + self.PLAYER_LIST_WIDTH // 2, y=log_y + 5)
+        title = self.header_font.render("Move Log", True, (0, 0, 0))
+        title_rect = title.get_rect(centerx=log_x + self.PLAYER_LIST_WIDTH // 2, y=log_y + 12 * self.scale_factor)
         self.screen.blit(title, title_rect)
         
         # Use stored content height
-        max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 30))
+        max_scroll = max(0, self.move_log_content_height - (self.move_log_height - 40 * self.scale_factor))
         self.move_log_scroll = min(max_scroll, max(0, self.move_log_scroll))
         
         # Draw scroll bar if content exceeds box height
-        if self.move_log_content_height > self.move_log_height - 30:  # Account for title
+        if self.move_log_content_height > self.move_log_height - 40 * self.scale_factor:  # Account for title
             # Calculate scroll bar height and position
-            visible_height = self.move_log_height - 30
-            scroll_bar_height = max(30, int(visible_height * (visible_height / self.move_log_content_height)))
-            scroll_bar_y = log_y + 30 + (self.move_log_scroll * (visible_height - scroll_bar_height) / (self.move_log_content_height - visible_height))
+            visible_height = self.move_log_height - 40 * self.scale_factor
+            scroll_bar_height = max(40 * self.scale_factor, int(visible_height * (visible_height / self.move_log_content_height)))
+            scroll_bar_y = log_y + 40 * self.scale_factor + (self.move_log_scroll * (visible_height - scroll_bar_height) / (self.move_log_content_height - visible_height))
             
             # Store scroll bar rectangle for mouse interaction
-            self.scroll_bar_rect = pygame.Rect(log_x + self.PLAYER_LIST_WIDTH - 15, scroll_bar_y, 10, scroll_bar_height)
+            self.scroll_bar_rect = pygame.Rect(log_x + self.PLAYER_LIST_WIDTH - 15 * self.scale_factor, scroll_bar_y, 10 * self.scale_factor, scroll_bar_height)
             self.scroll_bar_height = scroll_bar_height
             
             # Draw scroll bar
@@ -2482,15 +2441,15 @@ class ScrabbleClient:
             pygame.draw.rect(self.screen, (100, 100, 100), self.scroll_bar_rect, 1)
         
         # Set clipping region for move log content
-        clip_rect = pygame.Rect(log_x, log_y + 30, self.PLAYER_LIST_WIDTH - 15, self.move_log_height - 30)  # Reduced width by 5 pixels
+        clip_rect = pygame.Rect(log_x, log_y + 40 * self.scale_factor, self.PLAYER_LIST_WIDTH - 15 * self.scale_factor, self.move_log_height - 40 * self.scale_factor)  # Reduced width by 5 pixels
         self.screen.set_clip(clip_rect)
         
         # Initialize y_offset
-        y_offset = log_y + 30 - self.move_log_scroll
+        y_offset = log_y + 40 * self.scale_factor - self.move_log_scroll
         
         # Draw moves
         move_number = 0
-        event = ['overtime_penalty', 'timeout_penalty', 'message']
+        event = ['message']
         for i, move in enumerate(self.move_log):
             if move.get('type') not in event:
                 move_number += 1
@@ -2499,7 +2458,7 @@ class ScrabbleClient:
             move_height = self._get_move_height(move)  # Player name and points
             
             # Skip if this move would be completely above the visible area
-            if y_offset + move_height < log_y + 30:
+            if y_offset + move_height < log_y + 30 * self.scale_factor:
                 y_offset += move_height
                 continue
                 
@@ -2512,53 +2471,53 @@ class ScrabbleClient:
             move_num = f"{move_number}" if move.get('type') not in event else ""
             # BLUE (40, 120, 215)
             num_surface = self.info_font.render(move_num, True, (255, 105, 180))  # Pink color
-            if log_y + 30 <= y_offset <= log_y + self.move_log_height:
-                self.screen.blit(num_surface, (log_x + 5, y_offset))
+            if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
+                self.screen.blit(num_surface, (log_x + 5 * self.scale_factor, y_offset))
             
             # Draw move content based on type
             if 'words' in move:  # Regular move
                 player_text = f"{move['username']}: "
                 player_surface = self.info_font.render(player_text, True, (0, 0, 0))
-                if log_y + 30 <= y_offset <= log_y + self.move_log_height:
-                    self.screen.blit(player_surface, (log_x + 25, y_offset))
+                if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
+                    self.screen.blit(player_surface, (log_x + 25 * self.scale_factor, y_offset))
                 
                 # Draw points number in purple
                 points_num = f"{move['total_points']}"
                 points_surface = self.info_font.render(points_num, True, (0, 74, 128))
-                if log_y + 30 <= y_offset <= log_y + self.move_log_height:
-                    points_rect = points_surface.get_rect(topleft=(log_x + 25 + player_surface.get_width(), y_offset))
+                if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
+                    points_rect = points_surface.get_rect(topleft=(log_x + 25 * self.scale_factor + player_surface.get_width(), y_offset))
                     self.screen.blit(points_surface, points_rect)
                 
                 # Draw "pts" in black
                 pts_text = " pts"
                 pts_surface = self.info_font.render(pts_text, True, (0, 0, 0))
-                if log_y + 30 <= y_offset <= log_y + self.move_log_height:
+                if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
                     pts_rect = pts_surface.get_rect(topleft=(points_rect.right, y_offset))
                     self.screen.blit(pts_surface, pts_rect)
                 
-                y_offset += 20
+                y_offset += 20 * self.scale_factor
                 
                 # Draw each word
                 for word_info in move['words']:
                     # Calculate word height
-                    word_height = 25  # Word tiles
+                    word_height = 25 * self.scale_factor  # Word tiles
                     definition = word_info['definition']
                     words = definition.split()
                     lines = []
                     current_line = []
                     for word in words:
-                        if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
+                        if len(' '.join(current_line + [word])) * 6 * self.scale_factor < self.PLAYER_LIST_WIDTH - 40 * self.scale_factor:
                             current_line.append(word)
                         else:
                             lines.append(' '.join(current_line))
                             current_line = [word]
                     if current_line:
                         lines.append(' '.join(current_line))
-                    word_height += len(lines) * 15
-                    word_height += 2  # Space after definition
+                    word_height += len(lines) * 15 * self.scale_factor
+                    word_height += 2 * self.scale_factor  # Space after definition
                     
                     # Skip if this word would be completely below the visible area
-                    if y_offset + word_height < log_y + 30:
+                    if y_offset + word_height < log_y + 30 * self.scale_factor:
                         y_offset += word_height
                         continue
                     
@@ -2568,7 +2527,7 @@ class ScrabbleClient:
                         continue
                     
                     # Draw word with colored tiles
-                    x_offset = log_x + 10
+                    x_offset = log_x + 10 * self.scale_factor
                     for row, col, letter, square_type in word_info['positions']:
                         # Determine tile color based on square type
                         if square_type is not None:  # Only show special colors for newly placed letters
@@ -2586,8 +2545,8 @@ class ScrabbleClient:
                             color = self.LETTER_COLORS['placed']  # Use normal color for existing letters
                         
                         # Draw tile
-                        tile_rect = pygame.Rect(x_offset, y_offset, 20, 20)
-                        if log_y + 30 <= y_offset <= log_y + self.move_log_height:
+                        tile_rect = pygame.Rect(x_offset, y_offset, 20 * self.scale_factor, 20 * self.scale_factor)
+                        if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
                             pygame.draw.rect(self.screen, color, tile_rect)
                             pygame.draw.rect(self.screen, (0, 0, 0), tile_rect, 1)
                             
@@ -2597,23 +2556,23 @@ class ScrabbleClient:
                             letter_rect = letter_surface.get_rect(center=tile_rect.center)
                             self.screen.blit(letter_surface, letter_rect)
                         
-                        x_offset += 22
+                        x_offset += 22 * self.scale_factor
                     
                     # Draw word score after the tiles
                     score_text = f" {word_info['score']}"
                     score_surface = self.info_font.render(score_text, True, (128, 0, 128))  # Purple color
-                    if log_y + 30 <= y_offset <= log_y + self.move_log_height:
-                        self.screen.blit(score_surface, (x_offset, y_offset + 5))
+                    if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
+                        self.screen.blit(score_surface, (x_offset, y_offset + 5 * self.scale_factor))
                     
                     # Draw definition
-                    y_offset += 25
+                    y_offset += 25 * self.scale_factor
                     definition = word_info['definition']
                     # Split definition into multiple lines if too long
                     words = definition.split()
                     lines = []
                     current_line = []
                     for word in words:
-                        if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
+                        if len(' '.join(current_line + [word])) * 6 * self.scale_factor < self.PLAYER_LIST_WIDTH - 40 * self.scale_factor:
                             current_line.append(word)
                         else:
                             lines.append(' '.join(current_line))
@@ -2625,37 +2584,37 @@ class ScrabbleClient:
                         # Always render the line to maintain proper spacing
                         def_surface = self.info_font.render(line, True, (100, 100, 100))
                         # Only blit if it's in the visible area
-                        if log_y + 30 <= y_offset <= log_y + self.move_log_height:
-                            self.screen.blit(def_surface, (log_x + 10, y_offset))
-                        y_offset += 15
+                        if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
+                            self.screen.blit(def_surface, (log_x + 10 * self.scale_factor, y_offset))
+                        y_offset += 15 * self.scale_factor
                     
-                    y_offset += 2  # Space after definition
+                    y_offset += 2 * self.scale_factor  # Space after definition
                 
-                y_offset += 2
+                y_offset += 2 * self.scale_factor
 
             elif move.get('type') == 'pass':  # Pass move
                 player_text = f"{move['username']}: Passed turn"
                 player_surface = self.info_font.render(player_text, True, (0, 0, 0))
-                if log_y + 30 <= y_offset <= log_y + self.move_log_height:
-                    self.screen.blit(player_surface, (log_x + 25, y_offset))
-                y_offset += 15
-                y_offset += 2  # Space after pass move
+                if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
+                    self.screen.blit(player_surface, (log_x + 25 * self.scale_factor, y_offset))
+                y_offset += 15 * self.scale_factor
+                y_offset += 2 * self.scale_factor  # Space after pass move
             elif move.get('type') == 'game_end':  # Game end move
                 # Draw final scores
                 scores_text = "Final Scores:"
                 scores_surface = self.info_font.render(scores_text, True, (0, 0, 0))
-                if log_y + 30 <= y_offset <= log_y + self.move_log_height:
-                    self.screen.blit(scores_surface, (log_x + 25, y_offset))
-                y_offset += 20
+                if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
+                    self.screen.blit(scores_surface, (log_x + 25 * self.scale_factor, y_offset))
+                y_offset += 20 * self.scale_factor
                 
                 # Draw each player's score
                 for username, score in move.get('scores', {}).items():
                     score_text = f"{username}: {score} points"
                     score_surface = self.info_font.render(score_text, True, (0, 0, 0))
-                    if log_y + 30 <= y_offset <= log_y + self.move_log_height:
-                        self.screen.blit(score_surface, (log_x + 35, y_offset))
-                    y_offset += 20
-                y_offset += 2  # Space after game end
+                    if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
+                        self.screen.blit(score_surface, (log_x + 35 * self.scale_factor, y_offset))
+                    y_offset += 20 * self.scale_factor
+                y_offset += 2 * self.scale_factor  # Space after game end
             elif move.get('type') == 'exchange':  # Exchange move
                 # Draw exchange text
                 text = f"{move['username']}: Exchanged tiles"
@@ -2663,7 +2622,7 @@ class ScrabbleClient:
                 lines = []
                 current_line = []
                 for word in words:
-                    if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
+                    if len(' '.join(current_line + [word])) * 6 * self.scale_factor < self.PLAYER_LIST_WIDTH - 40 * self.scale_factor:
                         current_line.append(word)
                     else:
                         lines.append(' '.join(current_line))
@@ -2673,25 +2632,10 @@ class ScrabbleClient:
                 # Draw exchange text
                 for line in lines:
                     player_surface = self.info_font.render(line, True, (0, 0, 0))
-                    if log_y + 30 <= y_offset <= log_y + self.move_log_height:
-                        self.screen.blit(player_surface, (log_x + 25, y_offset))
-                    y_offset += 15
-                y_offset += 2  # Space after exchange move
-            elif move.get('type') == 'overtime_penalty':
-                # Draw overtime penalty
-                penalty_text = f"{move['username']}: -{move['penalty']} pts (overtime)"
-                penalty_surface = self.info_font.render(penalty_text, True, (255, 0, 0))
-                if log_y + 30 <= y_offset <= log_y + self.move_log_height:
-                    self.screen.blit(penalty_surface, (log_x + 25, y_offset))
-                y_offset += 15
-                y_offset += 2
-            elif move.get('type') == 'timeout_penalty':
-                penalty_text = f"{move['username']}: -{move['penalty']} pts (timeout)"
-                penalty_surface = self.info_font.render(penalty_text, True, (255, 0, 0))
-                if log_y + 30 <= y_offset <= log_y + self.move_log_height:
-                    self.screen.blit(penalty_surface, (log_x + 25, y_offset))
-                y_offset += 15
-                y_offset += 2
+                    if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
+                        self.screen.blit(player_surface, (log_x + 25 * self.scale_factor, y_offset))
+                    y_offset += 15 * self.scale_factor
+                y_offset += 2 * self.scale_factor  # Space after exchange move
             elif move.get('type') == 'message':  # Exchange move
                 # Draw exchange text
                 text = move.get('message')
@@ -2699,7 +2643,7 @@ class ScrabbleClient:
                 lines = []
                 current_line = []
                 for word in words:
-                    if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
+                    if len(' '.join(current_line + [word])) * 6 * self.scale_factor < self.PLAYER_LIST_WIDTH - 40 * self.scale_factor:
                         current_line.append(word)
                     else:
                         lines.append(' '.join(current_line))
@@ -2709,10 +2653,10 @@ class ScrabbleClient:
                 # Draw exchange text
                 for line in lines:
                     player_surface = self.info_font.render(line, True, move.get('color'))
-                    if log_y + 30 <= y_offset <= log_y + self.move_log_height:
-                        self.screen.blit(player_surface, (log_x + 25, y_offset))
-                    y_offset += 15
-                y_offset += 2  # Space after exchange move
+                    if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
+                        self.screen.blit(player_surface, (log_x + 25 * self.scale_factor, y_offset))
+                    y_offset += 15 * self.scale_factor
+                y_offset += 2 * self.scale_factor  # Space after exchange move
         
         # Reset clipping
         self.screen.set_clip(None)
@@ -2857,8 +2801,8 @@ class ScrabbleClient:
         self.screen.blit(overlay, (0, 0))
         
         # Draw dialog box
-        dialog_width = 400  # Increased width to accommodate letter grid
-        dialog_height = 400  # Increased height to accommodate letter grid
+        dialog_width = 400 * self.scale_factor
+        dialog_height = 340 * self.scale_factor
         dialog_x = (self.WIDTH - dialog_width) // 2
         dialog_y = (self.HEIGHT - dialog_height) // 2
         
@@ -2867,44 +2811,38 @@ class ScrabbleClient:
         pygame.draw.rect(self.screen, (0, 0, 0), 
                        (dialog_x, dialog_y, dialog_width, dialog_height), 2)
         
-        # Create fixed-size fonts for the dialog
-        title_font = pygame.font.SysFont(None, 24)  # Fixed size for title
-        letter_font = pygame.font.SysFont(None, 28)  # Font for blank tile letter
-        value_font = pygame.font.SysFont(None, 16)  # Font for tile value
-        button_font = pygame.font.SysFont(None, 20) # Fixed size for button text
-        
         # Draw instructions
-        text = title_font.render("Select a letter for the blank tile", True, (0, 0, 0))
+        text = self.header_font.render("Select a letter for the blank tile", True, (0, 0, 0))
         text_rect = text.get_rect(centerx=dialog_x + dialog_width//2, 
-                                y=dialog_y + 20)
+                                y=dialog_y + 20 * self.scale_factor)
         self.screen.blit(text, text_rect)
         
         # Draw blank tile
-        tile_size = 40
+        tile_size = self.TILE_SIZE
         tile_x = dialog_x + (dialog_width - tile_size) // 2
-        tile_y = dialog_y + 50
+        tile_y = dialog_y + 50 * self.scale_factor
         
         # Draw tile background
         pygame.draw.rect(self.screen, (255, 255, 255), (tile_x, tile_y, tile_size, tile_size))
         pygame.draw.rect(self.screen, (0, 0, 0), (tile_x, tile_y, tile_size, tile_size), 2)
         
         # Draw question mark in purple
-        question_mark = letter_font.render("?", True, (128, 0, 128))
+        question_mark = self.font.render("?", True, (128, 0, 128))
         question_rect = question_mark.get_rect(center=(tile_x + tile_size//2, tile_y + tile_size//2))
         self.screen.blit(question_mark, question_rect)
         
         # Draw point value (0) in gray
-        value_text = value_font.render(str(self.LETTER_VALUES.get('?')), True, (80, 80, 80))
+        value_text = self.score_font.render(str(self.LETTER_VALUES.get('?')), True, (80, 80, 80))
         value_rect = value_text.get_rect(bottomright=(tile_x + tile_size - 3, tile_y + tile_size - 2))
         self.screen.blit(value_text, value_rect)
 
         # Create letter buttons grid
         letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-        button_size = 35
+        button_size = 35 * self.scale_factor
         buttons_per_row = 7
-        spacing = 5
+        spacing = 5 * self.scale_factor
         start_x = dialog_x + (dialog_width - (buttons_per_row * (button_size + spacing))) // 2
-        start_y = dialog_y + 120  # Start below the blank tile
+        start_y = dialog_y + 120 * self.scale_factor  # Start below the blank tile
 
         # Store letter buttons for click detection
         self.blank_dialog_letter_buttons = {}
@@ -2919,20 +2857,20 @@ class ScrabbleClient:
             pygame.draw.rect(self.screen, (200, 200, 200), button_rect)
             pygame.draw.rect(self.screen, (0, 0, 0), button_rect, 2)
             
-            letter_text = letter_font.render(letter, True, (0, 0, 0))
+            letter_text = self.font.render(letter, True, (0, 0, 0))
             letter_rect = letter_text.get_rect(center=button_rect.center)
             self.screen.blit(letter_text, letter_rect)
             
             self.blank_dialog_letter_buttons[letter] = button_rect
 
         # Draw cancel button
-        cancel_button = pygame.Rect(dialog_x + (dialog_width - 100) // 2,
-                                  dialog_y + dialog_height - 50,
-                                  100, 30)
+        cancel_button = pygame.Rect(dialog_x + (dialog_width - 100 * self.scale_factor) // 2,
+                                  dialog_y + dialog_height - 50 * self.scale_factor,
+                                  100 * self.scale_factor, 30 * self.scale_factor)
         pygame.draw.rect(self.screen, (200, 200, 200), cancel_button)
         pygame.draw.rect(self.screen, (0, 0, 0), cancel_button, 2)
         
-        cancel_text = button_font.render("Cancel", True, (0, 0, 0))
+        cancel_text = self.small_button_font.render("Cancel", True, (0, 0, 0))
         cancel_rect = cancel_text.get_rect(center=cancel_button.center)
         self.screen.blit(cancel_text, cancel_rect)
 
@@ -2945,8 +2883,8 @@ class ScrabbleClient:
             return
 
         # Calculate dialog dimensions
-        dialog_width = 400
-        dialog_height = 300
+        dialog_width = 500 * self.scale_factor
+        dialog_height = 300 * self.scale_factor
         dialog_x = (self.WIDTH - dialog_width) // 2
         dialog_y = (self.HEIGHT - dialog_height) // 2
 
@@ -2955,17 +2893,15 @@ class ScrabbleClient:
         pygame.draw.rect(self.screen, (0, 0, 0), (dialog_x, dialog_y, dialog_width, dialog_height), 2)
 
         # Draw title
-        title_font = pygame.font.SysFont('Arial', 24, bold=True)
-        title_text = title_font.render("Unseen Tiles", True, (0, 0, 0))
-        title_rect = title_text.get_rect(centerx=dialog_x + dialog_width//2, y=dialog_y + 20)
+        title_text = self.header_font.render("Unseen Tiles", True, (0, 0, 0))
+        title_rect = title_text.get_rect(centerx=dialog_x + dialog_width//2, y=dialog_y + 20 * self.scale_factor)
         self.screen.blit(title_text, title_rect)
 
         # Draw close button
-        close_button_rect = pygame.Rect(dialog_x + dialog_width - 100, dialog_y + dialog_height - 40, 80, 30)
+        close_button_rect = pygame.Rect(dialog_x + dialog_width - 100 * self.scale_factor, dialog_y + dialog_height - 40 * self.scale_factor, 80 * self.scale_factor, 30 * self.scale_factor)
         pygame.draw.rect(self.screen, (200, 200, 200), close_button_rect)
         pygame.draw.rect(self.screen, (0, 0, 0), close_button_rect, 1)
-        close_font = pygame.font.SysFont('Arial', 20, bold=True)
-        close_text = close_font.render("Close", True, (0, 0, 0))
+        close_text = self.small_button_font.render("Close", True, (0, 0, 0))
         close_text_rect = close_text.get_rect(center=close_button_rect.center)
         self.screen.blit(close_text, close_text_rect)
 
@@ -2976,17 +2912,12 @@ class ScrabbleClient:
             for tile in self.tile_rack:
                 if tile in available_tiles:
                     available_tiles[tile] = max(0, available_tiles[tile] - 1)
-
-            # Create fonts for letter and count
-            letter_font = pygame.font.SysFont('Arial', 20)  # Standard letter font
-            value_font = pygame.font.SysFont('Arial', 12)  # Small font for tile values
-            count_font = pygame.font.SysFont('Arial', 16)  # Font for count numbers
             
-            tile_size = 35  # Reduced tile size
-            spacing = 8  # Reduced spacing
-            tiles_per_row = 9  # Increased tiles per row
+            tile_size = self.TILE_SIZE
+            spacing = self.MARGIN * 0.25
+            tiles_per_row = 9
             x_start = dialog_x + (dialog_width - (tiles_per_row * (tile_size + spacing) - spacing)) // 2  # Center the grid
-            y_start = dialog_y + 60
+            y_start = dialog_y + 50 * self.scale_factor
 
             # Sort tiles by letter
             sorted_tiles = sorted(available_tiles.items(), key=lambda x: x[0])
@@ -2996,26 +2927,26 @@ class ScrabbleClient:
                     row = i // tiles_per_row
                     col = i % tiles_per_row
                     x = x_start + col * (tile_size + spacing)
-                    y = y_start + row * (tile_size + spacing + 20)
+                    y = y_start + row * (tile_size + spacing + 20 * self.scale_factor)
 
                     # Draw tile background
                     pygame.draw.rect(self.screen, (200, 200, 200), (x, y, tile_size, tile_size))
                     pygame.draw.rect(self.screen, (0, 0, 0), (x, y, tile_size, tile_size), 1)
 
                     # Draw tile letter
-                    letter_text = letter_font.render(tile, True, (0, 0, 0))
+                    letter_text = self.font.render(tile, True, (0, 0, 0))
                     letter_rect = letter_text.get_rect(center=(x + tile_size//2, y + tile_size//2))
                     self.screen.blit(letter_text, letter_rect)
 
                     # Draw tile value (gray)
                     value = self.LETTER_VALUES.get(tile.upper(), 0)
-                    value_text = value_font.render(str(value), True, (80, 80, 80))
-                    value_rect = value_text.get_rect(bottomright=(x + tile_size - 3, y + tile_size - 2))
+                    value_text = self.score_font.render(str(value), True, (80, 80, 80))
+                    value_rect = value_text.get_rect(bottomright=(x + tile_size - 3 * self.scale_factor, y + tile_size - 2 * self.scale_factor))
                     self.screen.blit(value_text, value_rect)
 
                     # Draw count below tile (blue)
-                    count_text = count_font.render(str(count), True, (0, 0, 255))
-                    count_rect = count_text.get_rect(center=(x + tile_size//2, y + tile_size + 10))
+                    count_text = self.info_font.render(str(count), True, (0, 0, 255))
+                    count_rect = count_text.get_rect(center=(x + tile_size//2, y + tile_size + 10 * self.scale_factor))
                     self.screen.blit(count_text, count_rect)
 
         # Store close button rect for click detection
