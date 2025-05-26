@@ -3,6 +3,7 @@ import socket
 import threading
 import json
 import sys
+import os
 import random
 import traceback
 import time
@@ -30,6 +31,10 @@ class ScrabbleClient:
     
     HOST = 'localhost'  # Default to localhost, will be overridden by user input
     PORT = 12345
+    
+    # Timer settings
+    TIMER_WARNING_THRESHOLD = 60  # seconds
+    TIMER_CRITICAL_THRESHOLD = 30  # seconds
     
     # Special tile colors
     SPECIAL_COLORS = {
@@ -114,6 +119,10 @@ class ScrabbleClient:
         self.players = []  # Initialize players list
         self.exchange_mode = False  # Track if we're in exchange mode
         self.tiles_to_exchange = set()  # Track tiles selected for exchange
+        
+        # Timer state
+        self.player_timers = {}  # {username: remaining_time_in_seconds}
+        self.player_overtime = {}  # {username: overtime_used_in_seconds}
         
         # Drag state
         self.dragging_tile = False
@@ -586,7 +595,18 @@ class ScrabbleClient:
                 print(f"Parsed JSON data: {data}")
                 if isinstance(data, dict):
                     message_type = data.get("type")
-                    if message_type == "game_end":
+                    if message_type == "timer_update":
+                        print("Received timer update")
+                        # Update timers
+                        self.player_timers = {
+                            username: data["timers"][username]["time_remaining"]
+                            for username in data["timers"]
+                        }
+                        self.player_overtime = {
+                            username: data["timers"][username]["overtime_used"]
+                            for username in data["timers"]
+                        }
+                    elif message_type == "game_end":
                         print("[DEBUG] Game end message received")
                         with self.state_lock:  # Acquire lock for state changes
                             print("[DEBUG] Acquired state lock for game end")
@@ -833,7 +853,7 @@ class ScrabbleClient:
         # Draw final scores
         y_offset = box_y + 100 if len(winners) <= 1 else box_y + 100 + (len(winners) * 20) + 20
         for username, score in sorted(self.final_scores.items(), key=lambda x: x[1], reverse=True):
-            score_text = f"{username}: {score} points"
+            score_text = f"{username}: {score} points" if score != 1 else f"{username}: {score} point"
             score_surface = main_font.render(score_text, True, (0, 0, 0))
             score_rect = score_surface.get_rect(centerx=box_x + box_width//2,
                                               y=y_offset)
@@ -1453,7 +1473,8 @@ class ScrabbleClient:
         title = title_font.render("Players", True, (0, 0, 0))
         title_rect = title.get_rect(centerx=player_x + self.PLAYER_LIST_WIDTH // 2, y=player_y + 5)
         self.screen.blit(title, title_rect)
-        
+
+        y_pos = player_y + 30
         # Draw player list
         for i, player in enumerate(self.players):
             if not self.game_started:
@@ -1463,16 +1484,116 @@ class ScrabbleClient:
                 # Add "(you)" to current player's name
                 username = f"{player['username']} (you)" if player['username'] == self.username else player['username']
                 text = f"{username}: {status}"
+                
+                # Wrap text if it's too long
+                words = text.split()
+                lines = []
+                current_line = []
+                for word in words:
+                    test_line = ' '.join(current_line + [word])
+                    if self.info_font.size(test_line)[0] <= self.PLAYER_LIST_WIDTH - 20:  # 20px margin
+                        current_line.append(word)
+                    else:
+                        lines.append(' '.join(current_line))
+                        current_line = [word]
+                if current_line:
+                    lines.append(' '.join(current_line))
+                
+                # Draw each line
+                for line in lines:
+                    player_surface = self.info_font.render(line, True, color)
+                    player_rect = player_surface.get_rect(x=player_x + 10, y=y_pos)
+                    self.screen.blit(player_surface, player_rect)
+                    y_pos += 15
             else:
-                # After game start, show points and turn
+                # After game start, show points, turn, and timer
                 color = (0, 200, 0) if player["current_turn"] else (0, 0, 0)
+                if player['timed_out']:
+                    color = (100, 100, 100)
                 # Add "(you)" to current player's name
-                username = f"{player['username']} (you)" if player['username'] == self.username else player['username']
+                username = f"{player['username']}"
+                if player['username'] == self.username:
+                    username += " (you)"
                 text = f"{username}: {player['points']} pts"
                 
-            player_surface = self.info_font.render(text, True, color)
-            player_rect = player_surface.get_rect(x=player_x + 10, y=player_y + 30 + 20 * i)
-            self.screen.blit(player_surface, player_rect)
+                # Wrap text if it's too long
+                words = text.split()
+                lines = []
+                current_line = []
+                for word in words:
+                    test_line = ' '.join(current_line + [word])
+                    if self.info_font.size(test_line)[0] <= self.PLAYER_LIST_WIDTH - 20:  # 20px margin
+                        current_line.append(word)
+                    else:
+                        lines.append(' '.join(current_line))
+                        current_line = [word]
+                if current_line:
+                    lines.append(' '.join(current_line))
+                
+                # Draw each line
+                for line in lines:
+                    player_surface = self.info_font.render(line, True, color)
+                    player_rect = player_surface.get_rect(x=player_x + 10, y=y_pos)
+                    self.screen.blit(player_surface, player_rect)
+                    y_pos += 15
+                y_pos -= 15
+                
+                line = lines[-1]
+                player_surface = self.info_font.render(line, True, color)
+                player_rect = player_surface.get_rect(x=player_x + 10, y=y_pos)
+                
+                # Draw timer
+                time_remaining = self.player_timers.get(player['username'], 0)
+                overtime_used = self.player_overtime.get(player['username'], 0)
+                
+                # Skip timer display if time is infinite (time_remaining will be float('inf'))
+                if time_remaining != float('inf'):
+                    # Calculate timer color
+                    if time_remaining <= self.TIMER_CRITICAL_THRESHOLD:
+                        timer_color = (255, 0, 0)  # Red
+                    elif time_remaining <= self.TIMER_WARNING_THRESHOLD:
+                        timer_color = (255, 165, 0)  # Orange
+                    else:
+                        timer_color = (0, 0, 0)  # Black
+                    
+                    # Format time string
+                    if time_remaining < 0:
+                        # For overtime, show negative time
+                        total_seconds = overtime_used
+                        minutes = int(total_seconds // 60)
+                        seconds = int(total_seconds % 60)
+                        time_text = f"-{minutes}:{seconds:02d}"
+                        timer_color = (255, 0, 0)  # Red for overtime
+                    else:
+                        minutes = int(time_remaining // 60)
+                        seconds = int(time_remaining % 60)
+                        time_text = f"{minutes:02d}:{seconds:02d}"
+                    
+                    # Draw timer
+                    timer_surface = self.info_font.render(time_text, True, timer_color)
+                    
+                    # Calculate available width for timer
+                    available_width = self.PLAYER_LIST_WIDTH - player_rect.width - 20  # 20px padding
+                    
+                    # If timer fits to the right, place it there
+                    if timer_surface.get_width() <= available_width:
+                        timer_rect = timer_surface.get_rect(
+                            left=player_rect.right + 10,
+                            centery=player_rect.centery
+                        )
+                        y_pos += 15  # Move down for next player
+                    else:
+                        # Otherwise place it below
+                        timer_rect = timer_surface.get_rect(
+                            left=player_rect.left,
+                            top=player_rect.top + 15
+                        )
+                        y_pos = timer_rect.bottom + 5  # Move down for next player
+                    
+                    self.screen.blit(timer_surface, timer_rect)
+                else:
+                    # If time is infinite, just move to next player
+                    y_pos += 15
 
     def _handle_rack_click(self, x, y):
         """Handle clicks on the tile rack."""
@@ -2090,56 +2211,7 @@ class ScrabbleClient:
         """Calculate the total height of the move log content."""
         content_height = 0
         for move in self.move_log:
-            if 'words' in move:  # Regular move
-                content_height += 20
-                for word_info in move['words']:
-                    # Word tiles line
-                    content_height += 25
-                    
-                    # Definition lines
-                    definition = word_info['definition']
-                    words = definition.split()
-                    lines = []
-                    current_line = []
-                    for word in words:
-                        if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
-                            current_line.append(word)
-                        else:
-                            lines.append(' '.join(current_line))
-                            current_line = [word]
-                    if current_line:
-                        lines.append(' '.join(current_line))
-                    content_height += len(lines) * 15
-                    
-                    # Space after definition
-                    content_height += 2
-                
-                # Space between moves
-                content_height += 2
-            elif move.get('type') == 'pass':  # Pass move
-                content_height += 15
-                content_height += 2  # Space after pass move
-            elif move.get('type') == 'game_end':  # Game end move
-                content_height += 20
-                # Add height for each player's score
-                content_height += len(move.get('scores', {})) * 20
-                content_height += 2  # Space after game end
-            elif move.get('type') == 'exchange':  # Exchange move
-                # Calculate height for wrapped exchange text
-                text = f"{move['username']}: Exchanged tiles"
-                words = text.split()
-                lines = []
-                current_line = []
-                for word in words:
-                    if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
-                        current_line.append(word)
-                    else:
-                        lines.append(' '.join(current_line))
-                        current_line = [word]
-                if current_line:
-                    lines.append(' '.join(current_line))
-                content_height += len(lines) * 15  # Height for wrapped lines
-                content_height += 2  # Space after exchange move
+            content_height += self._get_move_height(move)
         
         self.move_log_content_height = content_height
         # Ensure scroll position is within bounds
@@ -2286,6 +2358,69 @@ class ScrabbleClient:
         self.error_message = msg
         self.error_time = pygame.time.get_ticks()
 
+    def _get_move_height(self, move):
+        move_height = 0
+        if 'words' in move:  # Regular move
+            move_height += 20
+            for word_info in move['words']:
+                move_height += 25  # Word tiles
+                # Add height for definition lines
+                definition = word_info['definition']
+                words = definition.split()
+                lines = []
+                current_line = []
+                for word in words:
+                    if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
+                        current_line.append(word)
+                    else:
+                        lines.append(' '.join(current_line))
+                        current_line = [word]
+                if current_line:
+                    lines.append(' '.join(current_line))
+                move_height += len(lines) * 15
+                move_height += 2  # Space after definition
+            move_height += 2  # Space between moves
+        elif move.get('type') == 'pass':  # Pass move
+            move_height += 15  # Pass move line
+            move_height += 2  # Space after pass move
+        elif move.get('type') == 'game_end':  # Game end move
+            move_height += 20  # Game end line
+            move_height += 2  # Space after game end
+        elif move.get('type') == 'message':  # Exchange move
+            # Draw exchange text
+            text = move.get('message')
+            words = text.split()
+            lines = []
+            current_line = []
+            for word in words:
+                if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
+                    current_line.append(word)
+                else:
+                    lines.append(' '.join(current_line))
+                    current_line = [word]
+            if current_line:
+                lines.append(' '.join(current_line))
+            move_height += len(lines) * 15
+            move_height += 2  # Space after exchange move
+        elif move.get('type') == 'exchange':  # Exchange move
+            # Draw exchange text
+            text = f"{move['username']}: Exchanged tiles"
+            words = text.split()
+            lines = []
+            current_line = []
+            for word in words:
+                if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
+                    current_line.append(word)
+                else:
+                    lines.append(' '.join(current_line))
+                    current_line = [word]
+            if current_line:
+                lines.append(' '.join(current_line))
+            move_height += len(lines) * 15
+            move_height += 2  # Space after exchange move
+        
+        return move_height
+
     def draw_move_log(self):
         """Draw the move log box."""
         # Position below player list
@@ -2334,51 +2469,14 @@ class ScrabbleClient:
         y_offset = log_y + 30 - self.move_log_scroll
         
         # Draw moves
+        move_number = 0
+        event = ['overtime_penalty', 'timeout_penalty', 'message']
         for i, move in enumerate(self.move_log):
+            if move.get('type') not in event:
+                move_number += 1
+
             # Calculate move height
-            move_height = 0  # Player name and points
-            if 'words' in move:  # Regular move
-                move_height += 20
-                for word_info in move['words']:
-                    move_height += 25  # Word tiles
-                    # Add height for definition lines
-                    definition = word_info['definition']
-                    words = definition.split()
-                    lines = []
-                    current_line = []
-                    for word in words:
-                        if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
-                            current_line.append(word)
-                        else:
-                            lines.append(' '.join(current_line))
-                            current_line = [word]
-                    if current_line:
-                        lines.append(' '.join(current_line))
-                    move_height += len(lines) * 15
-                    move_height += 2  # Space after definition
-                move_height += 2  # Space between moves
-            elif move.get('type') == 'pass':  # Pass move
-                move_height += 15  # Pass move line
-                move_height += 2  # Space after pass move
-            elif move.get('type') == 'game_end':  # Game end move
-                move_height += 20  # Game end line
-                move_height += 2  # Space after game end
-            elif move.get('type') == 'exchange':  # Exchange move
-                # Draw exchange text
-                text = f"{move['username']}: Exchanged tiles"
-                words = text.split()
-                lines = []
-                current_line = []
-                for word in words:
-                    if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
-                        current_line.append(word)
-                    else:
-                        lines.append(' '.join(current_line))
-                        current_line = [word]
-                if current_line:
-                    lines.append(' '.join(current_line))
-                move_height += len(lines) * 15
-                move_height += 2  # Space after exchange move
+            move_height = self._get_move_height(move)  # Player name and points
             
             # Skip if this move would be completely above the visible area
             if y_offset + move_height < log_y + 30:
@@ -2391,7 +2489,7 @@ class ScrabbleClient:
                 continue
             
             # Draw move number
-            move_num = f"{i + 1}"
+            move_num = f"{move_number}" if move.get('type') not in event else ""
             # BLUE (40, 120, 215)
             num_surface = self.info_font.render(move_num, True, (255, 105, 180))  # Pink color
             if log_y + 30 <= y_offset <= log_y + self.move_log_height:
@@ -2549,11 +2647,45 @@ class ScrabbleClient:
                         current_line = [word]
                 if current_line:
                     lines.append(' '.join(current_line))
-                move_height = len(lines) * 15  # Height for wrapped lines
-                move_height += 2  # Space after exchange move
                 # Draw exchange text
                 for line in lines:
                     player_surface = self.info_font.render(line, True, (0, 0, 0))
+                    if log_y + 30 <= y_offset <= log_y + self.move_log_height:
+                        self.screen.blit(player_surface, (log_x + 25, y_offset))
+                    y_offset += 15
+                y_offset += 2  # Space after exchange move
+            elif move.get('type') == 'overtime_penalty':
+                # Draw overtime penalty
+                penalty_text = f"{move['username']}: -{move['penalty']} pts (overtime)"
+                penalty_surface = self.info_font.render(penalty_text, True, (255, 0, 0))
+                if log_y + 30 <= y_offset <= log_y + self.move_log_height:
+                    self.screen.blit(penalty_surface, (log_x + 25, y_offset))
+                y_offset += 15
+                y_offset += 2
+            elif move.get('type') == 'timeout_penalty':
+                penalty_text = f"{move['username']}: -{move['penalty']} pts (timeout)"
+                penalty_surface = self.info_font.render(penalty_text, True, (255, 0, 0))
+                if log_y + 30 <= y_offset <= log_y + self.move_log_height:
+                    self.screen.blit(penalty_surface, (log_x + 25, y_offset))
+                y_offset += 15
+                y_offset += 2
+            elif move.get('type') == 'message':  # Exchange move
+                # Draw exchange text
+                text = move.get('message')
+                words = text.split()
+                lines = []
+                current_line = []
+                for word in words:
+                    if len(' '.join(current_line + [word])) * 6 < self.PLAYER_LIST_WIDTH - 40:
+                        current_line.append(word)
+                    else:
+                        lines.append(' '.join(current_line))
+                        current_line = [word]
+                if current_line:
+                    lines.append(' '.join(current_line))
+                # Draw exchange text
+                for line in lines:
+                    player_surface = self.info_font.render(line, True, move.get('color'))
                     if log_y + 30 <= y_offset <= log_y + self.move_log_height:
                         self.screen.blit(player_surface, (log_x + 25, y_offset))
                     y_offset += 15
@@ -2668,7 +2800,17 @@ class ScrabbleClient:
     def _load_dictionary(self):
         """Load the Scrabble dictionary."""
         try:
-            with open('assets/dictionary/words_with_definitions.txt', 'r', encoding='utf-8') as f:
+            # Get the base path - works both in development and PyInstaller
+            if getattr(sys, 'frozen', False):
+                # Running in PyInstaller bundle
+                base_path = sys._MEIPASS
+            else:
+                # Running in normal Python environment
+                base_path = os.path.dirname(os.path.abspath(__file__))
+                
+            dict_path = os.path.join(base_path, 'assets', 'dictionary', 'words_with_definitions.txt')
+            
+            with open(dict_path, 'r', encoding='utf-8') as f:
                 # Skip the header line
                 next(f)
                 for line in f:

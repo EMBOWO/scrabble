@@ -21,6 +21,12 @@ class ScrabbleServer:
     BUFFER_SIZE = 1024
     RACK_SIZE = 7
     
+    # Timer settings
+    DEFAULT_TIME_PER_PLAYER = 25  # minutes
+    DEFAULT_OVERTIME = 10  # minutes
+    OVERTIME_PENALTY = 10  # points per minute
+    TIMER_CHECK_INTERVAL = 1.0  # seconds
+    
     # Standard Scrabble tile distribution
     TILE_DISTRIBUTION = {
         'A': 9, 'B': 2, 'C': 2, 'D': 4, 'E': 12, 'F': 2, 'G': 3, 'H': 2,
@@ -65,6 +71,14 @@ class ScrabbleServer:
         self.player_racks = {}      # {username: [tiles]}
         self.player_counter = 1     # For auto-generating usernames
         
+        # Timer management
+        self.time_per_player = self.DEFAULT_TIME_PER_PLAYER  # minutes
+        self.overtime = self.DEFAULT_OVERTIME  # minutes
+        self.player_timers = {}  # {username: remaining_time_in_seconds}
+        self.player_overtime = {}  # {username: overtime_used_in_seconds}
+        self.timer_thread = None
+        self.timer_running = False
+        
         # Tile bag
         self.tile_bag = self._initialize_tile_bag()
         self.bag_lock = threading.Lock()
@@ -76,6 +90,7 @@ class ScrabbleServer:
         self.player_points = defaultdict(int)  # {username: points}
         self.current_turn = None
         self.turn_order = []
+        self.turn_order_in_game = []
         self.turn_lock = threading.Lock()
         self.player_ready = {}  # {username: ready_status}
         self.handler_threads = []  # Track client handler threads
@@ -89,6 +104,12 @@ class ScrabbleServer:
         self.move_log = []    # List of moves for logging
         self.board_blanks = set()  # Track positions of blank tiles on the board
         self._load_dictionary()
+    
+    def _advance_turn(self):
+        with self.turn_lock:
+            current_idx = self.turn_order_in_game.index(self.current_turn)
+            next_idx = (current_idx + 1) % len(self.turn_order_in_game)
+            self.current_turn = self.turn_order_in_game[next_idx]
 
     def _initialize_tile_bag(self):
         """Create tile bag with validation."""
@@ -190,6 +211,7 @@ class ScrabbleServer:
                     "points": self.player_points[username],
                     "current_turn": (username == self.current_turn),
                     "ready": self.player_ready.get(username, False),
+                    "timed_out": username not in self.turn_order_in_game
                 }
                 for username in self.turn_order
             ]
@@ -256,8 +278,9 @@ class ScrabbleServer:
                 # --- Turn system initialization ---
                 if username not in self.turn_order:
                     self.turn_order.append(username)
+                    self.turn_order_in_game.append(username)
                 if self.current_turn is None:
-                    self.current_turn = self.turn_order[0]
+                    self.current_turn = self.turn_order_in_game[0]
                 # --- End turn system initialization ---
                 conn.sendall("OK:Username accepted\n".encode())
             self._broadcast_player_list()
@@ -299,10 +322,13 @@ class ScrabbleServer:
                     if username in self.turn_order:
                         idx = self.turn_order.index(username)
                         self.turn_order.remove(username)
+                    if username in self.turn_order_in_game:
+                        idx = self.turn_order_in_game.index(username)
+                        self.turn_order_in_game.remove(username)
                         # If it was their turn, advance turn
                         if self.current_turn == username:
-                            if self.turn_order:
-                                self.current_turn = self.turn_order[idx % len(self.turn_order)]
+                            if self.turn_order_in_game:
+                                self.current_turn = self.turn_order_in_game[idx % len(self.turn_order_in_game)]
                             else:
                                 self.current_turn = None
             try:
@@ -581,10 +607,7 @@ class ScrabbleServer:
         print(f"[BATCH] {username} placed {len(processed_moves)} tiles for {word_score} points")
         
         # Switch turns after a valid batch move
-        with self.turn_lock:
-            current_idx = self.turn_order.index(self.current_turn)
-            next_idx = (current_idx + 1) % len(self.turn_order)
-            self.current_turn = self.turn_order[next_idx]
+        self._advance_turn()
         
         # Broadcast updates
         self._broadcast_board()
@@ -611,7 +634,7 @@ class ScrabbleServer:
         self.last_move_was_pass = True
         
         # Only end game if all players have passed consecutively
-        if self.consecutive_passes >= len(self.turn_order):
+        if self.consecutive_passes >= len(self.turn_order_in_game):
             self._end_game()
             return
             
@@ -622,11 +645,7 @@ class ScrabbleServer:
         }
         self.move_log.append(pass_info)
         
-        # Switch turns
-        with self.turn_lock:
-            current_idx = self.turn_order.index(self.current_turn)
-            next_idx = (current_idx + 1) % len(self.turn_order)
-            self.current_turn = self.turn_order[next_idx]
+        self._advance_turn()
             
         # Broadcast updates
         self._broadcast_player_list()
@@ -775,11 +794,7 @@ class ScrabbleServer:
             self.consecutive_passes = 0
             self.last_move_was_pass = False
             
-            # Switch turns
-            with self.turn_lock:
-                current_idx = self.turn_order.index(self.current_turn)
-                next_idx = (current_idx + 1) % len(self.turn_order)
-                self.current_turn = self.turn_order[next_idx]
+            self._advance_turn()
             
             # Send updated rack and broadcast player list
             self._send_rack_update(conn)
@@ -802,7 +817,14 @@ class ScrabbleServer:
             fileno = conn.fileno()
             username = self.client_usernames.get(fileno)
             self._send_initial_data(conn)
-            conn.settimeout(1.0)
+            
+            # Set timeout only if socket is still valid
+            try:
+                conn.settimeout(1.0)
+            except OSError:
+                print(f"[ERROR] Socket invalid for {addr}")
+                return
+                
             while self.running:
                 try:
                     data = conn.recv(1024).decode().strip()
@@ -818,7 +840,7 @@ class ScrabbleServer:
                                 player = next((p for p in self.clients if self._get_username(p) == username), None)
                                 if player:
                                     self.clients.remove(player)
-                                    self.client_usernames.remove(player)
+                                    self.client_usernames.pop(player)
                                     try:
                                         player.close()
                                     except:
@@ -829,7 +851,7 @@ class ScrabbleServer:
                                 player = next((p for p in self.clients if p == conn), None)
                                 if player:
                                     self.clients.remove(player)
-                                    self.client_usernames.remove(player)
+                                    self.client_usernames.pop(player)
                                     try:
                                         player.close()
                                     except:
@@ -868,11 +890,17 @@ class ScrabbleServer:
                             self._send_rack_update(conn)
                     except ValueError as e:
                         error_msg = f"Error: {e}\n"
-                        conn.sendall(error_msg.encode())
+                        try:
+                            conn.sendall(error_msg.encode())
+                        except OSError:
+                            break
                 except socket.timeout:
                     continue
                 except ConnectionResetError:
                     print(f"[DISCONNECT] Client {username or addr} disconnected (connection reset)")
+                    break
+                except OSError as e:
+                    print(f"[ERROR] Socket error for {username or addr}: {e}")
                     break
                 except Exception as e:
                     print(f"[ERROR] Client handler error for {username or addr}: {e}")
@@ -920,6 +948,9 @@ class ScrabbleServer:
 
     def start(self):
         """Start the server with proper interrupt handling."""
+        # Setup timer settings before starting
+        self._setup_timer_settings()
+        
         if not self._setup_server_socket():
             return False
         
@@ -967,6 +998,7 @@ class ScrabbleServer:
             self.player_points.clear()
             self.player_ready.clear()
             self.turn_order.clear()
+            self.turn_order_in_game.clear()
             self.current_turn = None
             # Reset the tile bag
             self.tile_bag = self._initialize_tile_bag()
@@ -975,6 +1007,8 @@ class ScrabbleServer:
             # Clear the move log
             self.move_log.clear()
             self.board_blanks.clear()
+            # Stop timer
+            self._stop_timer()
         # Wait for all handler threads to finish
         for t in self.handler_threads:
             t.join(timeout=2)
@@ -1289,15 +1323,20 @@ class ScrabbleServer:
         # Fill racks outside the client lock to avoid deadlock
         for client in clients_copy:
             self._fill_rack(client)
+        # Start the timer
+        self._start_timer()
         print("[DEBUG] Game initialization complete")
 
     def _reset_game_state(self):
+        """Reset all game state variables."""
         self.game_started = False
         self.game_ended = False
         self.current_turn = None
         self.player_racks.clear()
         self.player_points.clear()
         self.player_ready.clear()
+        self.player_timers.clear()
+        self.player_overtime.clear()
         # Reset the tile bag
         self.tile_bag = self._initialize_tile_bag()
         # Reset the board
@@ -1305,6 +1344,202 @@ class ScrabbleServer:
         # Clear the move log
         self.move_log.clear()
         self.board_blanks.clear()
+        self.consecutive_passes = 0
+        # Stop timer
+        self._stop_timer()
+
+    def _setup_timer_settings(self):
+        """Prompt for timer settings before starting the server."""
+        while True:
+            try:
+                time_input = input(f"Enter time per player in minutes (default: {self.DEFAULT_TIME_PER_PLAYER}, 'u' for unlimited): ").strip()
+                if time_input.lower() == 'u':
+                    self.time_per_player = float('inf')
+                    self.overtime = 0
+                    print("Timer disabled - unlimited time")
+                    return
+                
+                if time_input:
+                    time_value = float(time_input)
+                    if time_value <= 0:
+                        print("Time must be greater than 0")
+                        continue
+                    self.time_per_player = time_value
+                
+                overtime_input = input(f"Enter overtime in minutes (default: {self.DEFAULT_OVERTIME}): ").strip()
+                if overtime_input:
+                    overtime_value = float(overtime_input)
+                    if overtime_value < 0:
+                        print("Overtime cannot be negative")
+                        continue
+                    self.overtime = overtime_value
+                
+                print(f"Timer settings: {self.time_per_player} minutes + {self.overtime} minutes overtime")
+                return
+            except ValueError:
+                print("Please enter a valid number")
+
+    def _start_timer(self):
+        """Start the timer thread."""
+        if self.time_per_player == float('inf'):
+            timer_data = {
+                "type": "timer_update",
+                "timers": {
+                    username: {
+                        "time_remaining": self.player_timers.get(username, self.time_per_player * 60),
+                        "overtime_used": self.player_overtime.get(username, 0)
+                    }
+                    for username in self.turn_order
+                }
+            }
+            self._broadcast_message(timer_data)
+            return
+            
+        self.timer_running = True
+        self.timer_thread = threading.Thread(target=self._timer_loop, daemon=True)
+        self.timer_thread.start()
+
+    def _stop_timer(self):
+        """Stop the timer thread."""
+        self.timer_running = False
+        if self.timer_thread:
+            self.timer_thread.join()
+
+    def _timer_loop(self):
+        """Main timer loop that checks and updates player times."""
+        while self.timer_running:
+            try:
+                points_changed = False
+                with self.turn_lock:
+                    if not self.game_started or self.game_ended:
+                        time.sleep(self.TIMER_CHECK_INTERVAL)
+                        continue
+                        
+                    current_player = self.current_turn
+                    if not current_player:
+                        time.sleep(self.TIMER_CHECK_INTERVAL)
+                        continue
+                    
+                    # Initialize timer if not exists
+                    if current_player not in self.player_timers:
+                        self.player_timers[current_player] = self.time_per_player * 60
+                        self.player_overtime[current_player] = 0
+                    
+                    # Store previous time for minute boundary check
+                    prev_time = self.player_timers[current_player]
+                    
+                    # Decrease time
+                    self.player_timers[current_player] -= self.TIMER_CHECK_INTERVAL
+                    
+                    # Check if time is up
+                    if self.player_timers[current_player] <= 0:
+                        # Start overtime if available
+                        if self.overtime > 0:
+                            overtime_used = abs(self.player_timers[current_player])
+                            self.player_overtime[current_player] = overtime_used
+                            
+                            # Check if we crossed a minute boundary
+                            prev_minute = int(prev_time / 60)
+                            current_minute = int(self.player_timers[current_player] / 60)
+                            
+                            # Apply penalty if we crossed 0:00 or any other minute boundary
+                            if (prev_time > 0 and self.player_timers[current_player] <= 0) or (prev_minute != current_minute and self.player_timers[current_player] < 0):
+                                penalty = self.OVERTIME_PENALTY
+                                self.player_points[current_player] = self.player_points[current_player] - penalty
+                                
+                                # Log overtime penalty
+                                penalty_info = {
+                                    "type": "message",
+                                    "message": f"{current_player}: -{penalty} points (overtime).",
+                                    "color": (255, 0, 0)
+                                }
+                                self.move_log.append(penalty_info)
+                                self._broadcast_move_log()
+                                points_changed = True
+                            
+                            # Check if overtime exceeded
+                            if overtime_used >= self.overtime * 60:
+                                self._handle_player_timeout(current_player)
+                        else:
+                            self._handle_player_timeout(current_player)
+                
+                # Broadcast updated times
+                self._broadcast_timer_update()
+                if points_changed:
+                    self._broadcast_player_list()
+                
+            except Exception as e:
+                print(f"[ERROR] Timer error: {e}")
+            
+            time.sleep(self.TIMER_CHECK_INTERVAL)
+
+    def _handle_player_timeout(self, username):
+        """Handle a player timing out."""
+        print(f"[TIMEOUT] Player {username} has timed out")
+        
+        # Update current turn if needed
+        if self.current_turn == username:
+            current_idx = self.turn_order_in_game.index(self.current_turn)
+            next_idx = (current_idx + 1) % len(self.turn_order_in_game)
+            self.current_turn = self.turn_order_in_game[next_idx]
+        
+        # Remove player from turn order
+        if username in self.turn_order_in_game:
+            self.turn_order_in_game.remove(username)
+        
+        # Remove player's rack and apply penalty
+        if username in self.player_racks:
+            # Calculate penalty from remaining tiles
+            remaining_tiles = self.player_racks[username]
+            penalty = sum(self._get_letter_value(tile) for tile in remaining_tiles)
+            self.player_points[username] = self.player_points[username] - penalty
+            
+            timeout_info = {
+                "type": "message",
+                "message": f"{username}: timed out. -{penalty} points from tile bag.",
+                "color": (255, 0 ,0)
+            }
+            self.move_log.append(timeout_info)
+            
+            # Return tiles to bag
+            self._return_tiles_to_bag(remaining_tiles)
+            self.player_racks[username] = []
+            
+            # Send rack update to the timed-out player to clear their rack
+            for client in self.clients[:]:
+                if self._get_username(client) == username:
+                    self._send_rack_update(client)
+                    break
+        
+        # Check if only one player remains
+        if len(self.turn_order_in_game) <= 1:
+            self._end_game()
+            return
+        
+        # Broadcast updates
+        self._broadcast_player_list()
+        self._broadcast_board()
+        self._broadcast_timer_update()
+        self._broadcast_tiles_remaining()
+        self._broadcast_move_log()
+
+    def _broadcast_timer_update(self):
+        """Broadcast current timer status to all clients."""
+        # Skip broadcasting if time is infinite
+        if self.time_per_player == float('inf'):
+            return
+            
+        timer_data = {
+            "type": "timer_update",
+            "timers": {
+                username: {
+                    "time_remaining": self.player_timers.get(username, self.time_per_player * 60),
+                    "overtime_used": self.player_overtime.get(username, 0)
+                }
+                for username in self.turn_order
+            }
+        }
+        self._broadcast_message(timer_data)
 
 
 def main():
