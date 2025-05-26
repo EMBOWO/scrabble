@@ -88,10 +88,8 @@ class ScrabbleClient:
         self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
         pygame.display.set_caption("BAB GROUP SCRABBLE")
         
-        # Initialize fonts
-        self._update_font_sizes()
-        
         self.clock = pygame.time.Clock()
+        self.fps = 144
         self.state_lock = threading.Lock()
         
         # Connection screen state
@@ -155,6 +153,10 @@ class ScrabbleClient:
         self.scroll_bar_offset = 0  # Height between scroll bar and mouse
         self.move_log_content_height = 0
         
+        # Cache for rendered text surfaces
+        self.text_cache = {}  # Cache for rendered text surfaces
+        self.move_heights = {}  # Cache for move heights
+        
         # Client-side letter buffer - stores temporarily placed letters
         self.letter_buffer = {}  # {(row, col): letter}
         
@@ -173,7 +175,11 @@ class ScrabbleClient:
         self.error_time = 0  # For auto-clearing error messages
 
         self.showing_unseen_tiles = False
+        self.showing_fps = False
         self.scale_factor = 1.0
+        
+        # Update font sizes after all initialization
+        self._update_font_sizes()
         
         bottom_y = self.MARGIN * 0.5 + self.BOARD_SIZE * self.TILE_SIZE + self.MARGIN * 0.5 + self.TILE_SIZE + 10 * self.scale_factor
         log_y = self.MARGIN + 140 * self.scale_factor  # Start of move log
@@ -202,6 +208,8 @@ class ScrabbleClient:
         self.title_font = pygame.font.SysFont(None, self.title_font_size)
         self.header_font = pygame.font.SysFont(None, self.header_font_size)
         self.small_button_font = pygame.font.SysFont(None, self.small_button_font_size)
+
+        self._clear_text_cache()  # Clear cache when fonts change
 
     def _initialize_special_tiles(self):
         """Initialize the special tiles grid."""
@@ -263,14 +271,14 @@ class ScrabbleClient:
         self.screen.blit(title, title_rect)
         
         # Draw input fields
-        input_width = 300
-        input_height = 40
+        input_width = 300 * self.scale_factor
+        input_height = 40 * self.scale_factor
         input_x = (self.WIDTH - input_width) // 2
-        input_y = self.MARGIN + 100
+        input_y = self.MARGIN + 100 * self.scale_factor
         
         # IP Address input
         ip_label = self.font.render("Server IP:", True, (0, 0, 0))
-        self.screen.blit(ip_label, (input_x, input_y - 30))
+        self.screen.blit(ip_label, (input_x, input_y - 30 * self.scale_factor))
         
         ip_rect = pygame.Rect(input_x, input_y, input_width, input_height)
         pygame.draw.rect(self.screen, self.INPUT_COLORS['background'], ip_rect)
@@ -280,14 +288,14 @@ class ScrabbleClient:
         ip_text = self.ip_input if self.ip_input else "localhost"
         text_color = self.INPUT_COLORS['text'] if self.ip_input else self.INPUT_COLORS['placeholder']
         ip_surface = self.font.render(ip_text, True, text_color)
-        ip_text_rect = ip_surface.get_rect(midleft=(input_x + 10, input_y + input_height // 2))
+        ip_text_rect = ip_surface.get_rect(midleft=(input_x + 10 * self.scale_factor, input_y + input_height // 2))
         self.screen.blit(ip_surface, ip_text_rect)
         
         # Username input
         username_label = self.font.render("Username:", True, (0, 0, 0))
-        self.screen.blit(username_label, (input_x, input_y + input_height + 20))
+        self.screen.blit(username_label, (input_x, input_y + input_height + 20 * self.scale_factor))
         
-        username_rect = pygame.Rect(input_x, input_y + input_height + 50, input_width, input_height)
+        username_rect = pygame.Rect(input_x, input_y + input_height + 50 * self.scale_factor, input_width, input_height)
         pygame.draw.rect(self.screen, self.INPUT_COLORS['background'], username_rect)
         border_color = self.INPUT_COLORS['border_active'] if self.active_input == "username" else self.INPUT_COLORS['border']
         pygame.draw.rect(self.screen, border_color, username_rect, 2)
@@ -295,14 +303,14 @@ class ScrabbleClient:
         username_text = self.username_input if self.username_input else "Enter username"
         text_color = self.INPUT_COLORS['text'] if self.username_input else self.INPUT_COLORS['placeholder']
         username_surface = self.font.render(username_text, True, text_color)
-        username_text_rect = username_surface.get_rect(midleft=(input_x + 10, input_y + input_height + 50 + input_height // 2))
+        username_text_rect = username_surface.get_rect(midleft=(input_x + 10 * self.scale_factor, input_y + input_height + 50 * self.scale_factor + input_height // 2))
         self.screen.blit(username_surface, username_text_rect)
         
         # Connect button
-        button_width = 200
-        button_height = 40
+        button_width = 200 * self.scale_factor
+        button_height = 40 * self.scale_factor
         button_x = (self.WIDTH - button_width) // 2
-        button_y = input_y + input_height * 2 + 100
+        button_y = input_y + input_height * 2 + 100 * self.scale_factor
         
         connect_rect = pygame.Rect(button_x, button_y, button_width, button_height)
         button_color = (100, 200, 100) if not self.connecting else (150, 150, 150)
@@ -317,8 +325,13 @@ class ScrabbleClient:
         # Draw error message if any
         if self.error_message:
             error_surface = self.font.render(self.error_message, True, (200, 0, 0))
-            error_rect = error_surface.get_rect(centerx=self.WIDTH // 2, y=button_y + button_height + 20)
+            error_rect = error_surface.get_rect(centerx=self.WIDTH // 2, y=button_y + button_height + 20 * self.scale_factor)
             self.screen.blit(error_surface, error_rect)
+            
+        # Draw FPS counter last so it's always visible
+        if self.showing_fps:
+            surf = self.info_font.render(f"{self.clock.get_fps():.1f}", True, (0, 200, 0))
+            self.screen.blit(surf, (self.MARGIN * 0.5, self.MARGIN * 0.5))
         
         # Store rectangles for click detection
         self.ip_rect = ip_rect
@@ -717,8 +730,10 @@ class ScrabbleClient:
                 if self.showing_unseen_tiles:
                     self._draw_unseen_tiles_dialog()
             
-            # Force update the display
-            pygame.display.flip()
+            # Draw FPS counter last so it's always visible
+            if self.showing_fps:
+                surf = self.button_font.render(f"{self.clock.get_fps():.1f}", True, (0, 200, 0))
+                self.screen.blit(surf, (self.MARGIN * 0.6, self.MARGIN * 0.6))
 
     def _draw_game_end_screen(self):
         # Draw semi-transparent overlay first
@@ -727,26 +742,26 @@ class ScrabbleClient:
         self.screen.blit(overlay, (0, 0))
         
         # Calculate base height and additional height needed
-        base_height = 80  # Base height for title and basic content
+        base_height = 80 * self.scale_factor  # Base height for title and basic content
         winner_height = 0
         if self.winner:
             max_score = max(self.final_scores.values())
             winners = [k for k, v in self.final_scores.items() if v == max_score]
             if len(winners) > 1:
                 # Height for draw message, winners list, and spacing
-                winner_height = 40 + (len(winners) * 20) + 20
+                winner_height = 40 * self.scale_factor + (len(winners) * 20 * self.scale_factor) + 20 * self.scale_factor
             else:
                 # Height for single winner message
-                winner_height = 20
+                winner_height = 20 * self.scale_factor
         
         # Height for final scores (all players)
-        scores_height = len(self.final_scores) * 20
+        scores_height = len(self.final_scores) * 20 * self.scale_factor
         
         # Calculate total height needed
-        box_height = base_height + winner_height + scores_height + 100  # Increased height for button
+        box_height = base_height + winner_height + scores_height + 100 * self.scale_factor  # Increased height for button
         
         # Draw game end box
-        box_width = 400
+        box_width = 400 * self.scale_factor
         box_x = (self.WIDTH - box_width) // 2
         box_y = (self.HEIGHT - box_height) // 2
         
@@ -756,16 +771,10 @@ class ScrabbleClient:
         pygame.draw.rect(self.screen, (0, 0, 0), 
                         (box_x, box_y, box_width, box_height), 2)
         
-        # Create fixed-size fonts for the dialog
-        title_font = pygame.font.SysFont(None, 36)  # Fixed size for title
-        main_font = pygame.font.SysFont(None, 24)   # Fixed size for main text
-        info_font = pygame.font.SysFont(None, 18)   # Fixed size for info text
-        button_font = pygame.font.SysFont(None, 20) # Fixed size for button text
-        
         # Draw title
-        title = title_font.render("Game Over!", True, (0, 0, 0))
+        title = self.title_font.render("Game Over!", True, (0, 0, 0))
         title_rect = title.get_rect(centerx=box_x + box_width//2, 
-                                  y=box_y + 20)
+                                  y=box_y + 20 * self.scale_factor)
         self.screen.blit(title, title_rect)
         
         # Draw winner or draw message
@@ -777,64 +786,64 @@ class ScrabbleClient:
             if len(winners) > 1:
                 # It's a draw
                 draw_text = "It's a Draw!"
-                draw_surface = main_font.render(draw_text, True, (0, 0, 200))  # Blue color for draw
+                draw_surface = self.font.render(draw_text, True, (0, 0, 200))  # Blue color for draw
                 draw_rect = draw_surface.get_rect(centerx=box_x + box_width//2,
-                                                y=box_y + 60)
+                                                y=box_y + 60 * self.scale_factor)
                 self.screen.blit(draw_surface, draw_rect)
                 
                 # Draw "Winners:" text
                 winners_text = "Winners:"
-                winners_surface = main_font.render(winners_text, True, (0, 0, 0))
+                winners_surface = self.font.render(winners_text, True, (0, 0, 0))
                 winners_rect = winners_surface.get_rect(centerx=box_x + box_width//2,
-                                                      y=box_y + 80)
+                                                      y=box_y + 80 * self.scale_factor)
                 self.screen.blit(winners_surface, winners_rect)
                 
                 # Draw each winner's name
-                y_offset = box_y + 100
+                y_offset = box_y + 100 * self.scale_factor
                 for winner in winners:
                     winner_text = f"{winner}"
-                    winner_surface = main_font.render(winner_text, True, (0, 200, 0))  # Green for winners
+                    winner_surface = self.font.render(winner_text, True, (0, 200, 0))  # Green for winners
                     winner_rect = winner_surface.get_rect(centerx=box_x + box_width//2,
                                                         y=y_offset)
                     self.screen.blit(winner_surface, winner_rect)
-                    y_offset += 20
+                    y_offset += 20 * self.scale_factor
             else:
                 # Single winner
                 winner_text = f"Winner: {self.winner}"
-                winner_surface = main_font.render(winner_text, True, (0, 200, 0))
+                winner_surface = self.font.render(winner_text, True, (0, 200, 0))
                 winner_rect = winner_surface.get_rect(centerx=box_x + box_width//2,
-                                                    y=box_y + 60)
+                                                    y=box_y + 60 * self.scale_factor)
                 self.screen.blit(winner_surface, winner_rect)
         
         # Draw final scores
-        y_offset = box_y + 100 if len(winners) <= 1 else box_y + 100 + (len(winners) * 20) + 20
+        y_offset = box_y + 100 * self.scale_factor if len(winners) <= 1 else box_y + 100 * self.scale_factor + (len(winners) * 20 * self.scale_factor) + 20 * self.scale_factor
         for username, score in sorted(self.final_scores.items(), key=lambda x: x[1], reverse=True):
             score_text = f"{username}: {score} points" if score != 1 else f"{username}: {score} point"
-            score_surface = main_font.render(score_text, True, (0, 0, 0))
+            score_surface = self.font.render(score_text, True, (0, 0, 0))
             score_rect = score_surface.get_rect(centerx=box_x + box_width//2,
                                               y=y_offset)
             self.screen.blit(score_surface, score_rect)
-            y_offset += 20
+            y_offset += 20 * self.scale_factor
         
         # Draw Return to Connection button
-        button_width = 200
-        button_height = 40
+        button_width = 200 * self.scale_factor
+        button_height = 40 * self.scale_factor
         button_x = box_x + (box_width - button_width) // 2
-        button_y = box_y + box_height - 80
+        button_y = box_y + box_height - 80 * self.scale_factor
         
         self.return_to_connection_button = pygame.Rect(button_x, button_y, button_width, button_height)
         pygame.draw.rect(self.screen, (100, 200, 255), self.return_to_connection_button)  # Light blue color
         pygame.draw.rect(self.screen, (0, 0, 0), self.return_to_connection_button, 2)
         
         button_text = "Return to Connection"
-        text_surface = button_font.render(button_text, True, (0, 0, 0))
+        text_surface = self.small_button_font.render(button_text, True, (0, 0, 0))
         text_rect = text_surface.get_rect(center=self.return_to_connection_button.center)
         self.screen.blit(text_surface, text_rect)
         
         # Draw instructions
-        instructions = info_font.render("Press Q to quit", True, (100, 100, 100))
+        instructions = self.info_font.render("Press Q to quit", True, (100, 100, 100))
         instructions_rect = instructions.get_rect(centerx=box_x + box_width//2,
-                                                y=box_y + box_height - 20)
+                                                y=box_y + box_height - 20 * self.scale_factor)
         self.screen.blit(instructions, instructions_rect)
 
     def _draw_board_tiles(self):
@@ -1889,10 +1898,10 @@ class ScrabbleClient:
             if self.game_started and self.ready and not self.game_ended:
                 self.showing_unseen_tiles = not self.showing_unseen_tiles
             return True
-        elif hasattr(self, 'unseen_tiles_close_button') and self.unseen_tiles_close_button.collidepoint(x, y):
+        elif self.showing_unseen_tiles and hasattr(self, 'unseen_tiles_close_button') and self.unseen_tiles_close_button.collidepoint(x, y):
             self.showing_unseen_tiles = False
             return True
-        elif hasattr(self, 'blank_dialog_cancel_button') and self.blank_dialog_cancel_button.collidepoint(x, y):
+        elif self.showing_blank_dialog and hasattr(self, 'blank_dialog_cancel_button') and self.blank_dialog_cancel_button.collidepoint(x, y):
             self.showing_blank_dialog = False
             # Return the blank tile to the rack
             self.tile_rack.append('?')
@@ -2130,6 +2139,10 @@ class ScrabbleClient:
         elif key == pygame.K_BACKSPACE:
             # Return all letters with Backspace
             self._return_all_letters()
+    
+    def _handle_universal_keydown(self, key):
+        if key == pygame.K_BACKQUOTE:
+            self.showing_fps = not self.showing_fps
 
     def _adjust_tile_size(self, delta):
         """Adjust the tile size and update all dependent measurements."""
@@ -2174,8 +2187,8 @@ class ScrabbleClient:
     def _calculate_move_log_content_height(self):
         """Calculate the total height of the move log content."""
         content_height = 0
-        for move in self.move_log:
-            content_height += self._get_move_height(move)
+        for i, move in enumerate(self.move_log):
+            content_height += self._get_move_height(move, i)
         
         self.move_log_content_height = content_height
         # Ensure scroll position is within bounds
@@ -2226,6 +2239,7 @@ class ScrabbleClient:
                         if not self.game_ended:  # Only handle mouse wheel if game hasn't ended
                             self._handle_mouse_wheel(event.y)
                     elif event.type == pygame.KEYDOWN:
+                        self._handle_universal_keydown(event.key)
                         if self.connection_screen:
                             self._handle_connection_screen_key(event)
                         else:
@@ -2243,7 +2257,7 @@ class ScrabbleClient:
                 
                 # Update the display
                 pygame.display.flip()
-                self.clock.tick(60)
+                self.clock.tick(self.fps)
         except KeyboardInterrupt:
             print("\nKeyboard interrupt received, shutting down client...")
             self.running = False
@@ -2322,7 +2336,13 @@ class ScrabbleClient:
         self.error_message = msg
         self.error_time = pygame.time.get_ticks()
 
-    def _get_move_height(self, move):
+    def _get_move_height(self, move, index):
+        """Calculate the height of a move with caching."""
+        # Use move as cache key
+        cache_key = str(move) + f"_{index}"
+        if cache_key in self.move_heights:
+            return self.move_heights[cache_key]
+
         move_height = 0
         if 'words' in move:  # Regular move
             move_height += 20
@@ -2340,18 +2360,18 @@ class ScrabbleClient:
             move_height += 20  # Game end line
             move_height += 2  # Space after game end
         elif move.get('type') == 'message':  # Exchange move
-            # Draw exchange text
             text = move.get('message')
             move_height += self._get_wrapped_line_count(self.PLAYER_LIST_WIDTH - 40 * self.scale_factor, text, self.info_font) * 15
             move_height += 2  # Space after exchange move
         elif move.get('type') == 'exchange':  # Exchange move
-            # Draw exchange text
             text = f"{move['username']}: Exchanged tiles"
             move_height += self._get_wrapped_line_count(self.PLAYER_LIST_WIDTH - 40 * self.scale_factor, text, self.info_font) * 15
             move_height += 2  # Space after exchange move
         
-        return move_height * self.scale_factor
-    
+        # Cache the result
+        self.move_heights[cache_key] = move_height * self.scale_factor
+        return self.move_heights[cache_key]
+
     def _wrap_text(self, width, text, font, top_left_pos, line_offset, color=(0, 0, 0)):
         """Wrap text to fit within a specified width, with hyphenation for long words.
         
@@ -2425,7 +2445,7 @@ class ScrabbleClient:
         return rendered_lines
 
     def draw_move_log(self):
-        """Draw the move log box."""
+        """Draw the move log box with virtual scrolling."""
         # Position below player list
         log_x = self.WIDTH - self.PLAYER_LIST_WIDTH - 20 * self.scale_factor
         log_y = self.MARGIN + 140 * self.scale_factor  # Below player list
@@ -2440,7 +2460,7 @@ class ScrabbleClient:
                         (log_x, log_y, self.PLAYER_LIST_WIDTH, self.move_log_height), 1)
         
         # Draw title
-        title = self.header_font.render("Move Log", True, (0, 0, 0))
+        title = self._get_cached_text_surface("Move Log", self.header_font)
         title_rect = title.get_rect(centerx=log_x + self.PLAYER_LIST_WIDTH // 2, y=log_y + 12 * self.scale_factor)
         self.screen.blit(title, title_rect)
         
@@ -2449,26 +2469,27 @@ class ScrabbleClient:
         self.move_log_scroll = min(max_scroll, max(0, self.move_log_scroll))
         
         # Draw scroll bar if content exceeds box height
-        if self.move_log_content_height > self.move_log_height - 40 * self.scale_factor:  # Account for title
-            # Calculate scroll bar height and position
+        if self.move_log_content_height > self.move_log_height - 40 * self.scale_factor:
             visible_height = self.move_log_height - 40 * self.scale_factor
             scroll_bar_height = max(40 * self.scale_factor, int(visible_height * (visible_height / self.move_log_content_height)))
             scroll_bar_y = log_y + 40 * self.scale_factor + (self.move_log_scroll * (visible_height - scroll_bar_height) / (self.move_log_content_height - visible_height))
             
-            # Store scroll bar rectangle for mouse interaction
             self.scroll_bar_rect = pygame.Rect(log_x + self.PLAYER_LIST_WIDTH - 15 * self.scale_factor, scroll_bar_y, 10 * self.scale_factor, scroll_bar_height)
             self.scroll_bar_height = scroll_bar_height
             
-            # Draw scroll bar
             pygame.draw.rect(self.screen, (200, 200, 200), self.scroll_bar_rect)
             pygame.draw.rect(self.screen, (100, 100, 100), self.scroll_bar_rect, 1)
         
         # Set clipping region for move log content
-        clip_rect = pygame.Rect(log_x, log_y + 40 * self.scale_factor, self.PLAYER_LIST_WIDTH - 15 * self.scale_factor, self.move_log_height - 40 * self.scale_factor)  # Reduced width by 5 pixels
+        clip_rect = pygame.Rect(log_x, log_y + 40 * self.scale_factor, self.PLAYER_LIST_WIDTH - 15 * self.scale_factor, self.move_log_height - 40 * self.scale_factor)
         self.screen.set_clip(clip_rect)
         
         # Initialize y_offset
         y_offset = log_y + 40 * self.scale_factor - self.move_log_scroll
+        
+        # Calculate visible range
+        visible_top = log_y + 40 * self.scale_factor
+        visible_bottom = log_y + self.move_log_height
         
         # Draw moves
         move_number = 0
@@ -2478,45 +2499,33 @@ class ScrabbleClient:
                 move_number += 1
 
             # Calculate move height
-            move_height = self._get_move_height(move)  # Player name and points
+            move_height = self._get_move_height(move, i)
             
-            # Skip if this move would be completely above the visible area
-            if y_offset + move_height < log_y + 30 * self.scale_factor:
-                y_offset += move_height
-                continue
-                
-            # Skip if this move would be completely below the visible area
-            if y_offset > log_y + self.move_log_height:
+            # Skip if this move would be completely above or below the visible area
+            if y_offset + move_height < visible_top or y_offset > visible_bottom:
                 y_offset += move_height
                 continue
             
             # Draw move number
             move_num = f"{move_number}" if move.get('type') not in event else ""
-            # BLUE (40, 120, 215)
-            num_surface = self.info_font.render(move_num, True, (255, 105, 180))  # Pink color
-            if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
-                self.screen.blit(num_surface, (log_x + 5 * self.scale_factor, y_offset))
+            num_surface = self._get_cached_text_surface(move_num, self.info_font, (255, 105, 180)) # BLUE (40, 120, 215)
+            self.screen.blit(num_surface, (log_x + 5 * self.scale_factor, y_offset))
             
             # Draw move content based on type
             if 'words' in move:  # Regular move
                 player_text = f"{move['username']}: "
-                player_surface = self.info_font.render(player_text, True, (0, 0, 0))
-                if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
-                    self.screen.blit(player_surface, (log_x + 25 * self.scale_factor, y_offset))
+                player_surface = self._get_cached_text_surface(player_text, self.info_font)
+                self.screen.blit(player_surface, (log_x + 25 * self.scale_factor, y_offset))
                 
-                # Draw points number in purple
                 points_num = f"{move['total_points']}"
-                points_surface = self.info_font.render(points_num, True, (0, 74, 128))
-                if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
-                    points_rect = points_surface.get_rect(topleft=(log_x + 25 * self.scale_factor + player_surface.get_width(), y_offset))
-                    self.screen.blit(points_surface, points_rect)
+                points_surface = self._get_cached_text_surface(points_num, self.info_font, (0, 74, 128))
+                points_rect = points_surface.get_rect(topleft=(log_x + 25 * self.scale_factor + player_surface.get_width(), y_offset))
+                self.screen.blit(points_surface, points_rect)
                 
-                # Draw "pts" in black
                 pts_text = " pts"
-                pts_surface = self.info_font.render(pts_text, True, (0, 0, 0))
-                if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
-                    pts_rect = pts_surface.get_rect(topleft=(points_rect.right, y_offset))
-                    self.screen.blit(pts_surface, pts_rect)
+                pts_surface = self._get_cached_text_surface(pts_text, self.info_font)
+                pts_rect = pts_surface.get_rect(topleft=(points_rect.right, y_offset))
+                self.screen.blit(pts_surface, pts_rect)
                 
                 y_offset += 20 * self.scale_factor
                 
@@ -2526,96 +2535,70 @@ class ScrabbleClient:
                     x_offset = log_x + 10 * self.scale_factor
                     for row, col, letter, square_type in word_info['positions']:
                         # Determine tile color based on square type
-                        if square_type is not None:  # Only show special colors for newly placed letters
-                            if square_type == 'DL':
-                                color = self.SPECIAL_COLORS['DL']
-                            elif square_type == 'TL':
-                                color = self.SPECIAL_COLORS['TL']
-                            elif square_type == 'DW':
-                                color = self.SPECIAL_COLORS['DW']
-                            elif square_type == 'TW':
-                                color = self.SPECIAL_COLORS['TW']
-                            else:
-                                color = self.LETTER_COLORS['placed']
+                        if square_type is not None:
+                            color = self.SPECIAL_COLORS.get(square_type, self.LETTER_COLORS['placed'])
                         else:
-                            color = self.LETTER_COLORS['placed']  # Use normal color for existing letters
+                            color = self.LETTER_COLORS['placed']
                         
                         # Draw tile
                         tile_rect = pygame.Rect(x_offset, y_offset, 20 * self.scale_factor, 20 * self.scale_factor)
-                        if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
-                            pygame.draw.rect(self.screen, color, tile_rect)
-                            pygame.draw.rect(self.screen, (0, 0, 0), tile_rect, 1)
-                            
-                            # Draw letter
-                            text_color = self.LETTER_TEXT_COLORS['blank'] if (row, col) in self.blank_tiles else self.LETTER_TEXT_COLORS['normal']
-                            letter_surface = self.info_font.render(letter, True, text_color)
-                            letter_rect = letter_surface.get_rect(center=tile_rect.center)
-                            self.screen.blit(letter_surface, letter_rect)
+                        pygame.draw.rect(self.screen, color, tile_rect)
+                        pygame.draw.rect(self.screen, (0, 0, 0), tile_rect, 1)
+                        
+                        # Draw letter
+                        text_color = self.LETTER_TEXT_COLORS['blank'] if (row, col) in self.blank_tiles else self.LETTER_TEXT_COLORS['normal']
+                        letter_surface = self._get_cached_text_surface(letter, self.info_font, text_color)
+                        letter_rect = letter_surface.get_rect(center=tile_rect.center)
+                        self.screen.blit(letter_surface, letter_rect)
                         
                         x_offset += 22 * self.scale_factor
                     
-                    # Draw word score after the tiles
+                    # Draw word score
                     score_text = f" {word_info['score']}"
-                    score_surface = self.info_font.render(score_text, True, (128, 0, 128))  # Purple color
-                    if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
-                        self.screen.blit(score_surface, (x_offset, y_offset + 5 * self.scale_factor))
+                    score_surface = self._get_cached_text_surface(score_text, self.info_font, (128, 0, 128))
+                    self.screen.blit(score_surface, (x_offset, y_offset + 5 * self.scale_factor))
                     
                     # Draw definition
                     y_offset += 25 * self.scale_factor
                     definition = word_info['definition']
-
-                    lines = self._wrap_text(self.PLAYER_LIST_WIDTH - 25 * self.scale_factor, definition, self.info_font, (log_x + 10 * self.scale_factor, y_offset), 15, color=(100, 100, 100))
+                    
+                    lines = self._wrap_text(self.PLAYER_LIST_WIDTH - 25 * self.scale_factor, definition, self.info_font, (log_x + 10 * self.scale_factor, y_offset), 15 * self.scale_factor, color=(100, 100, 100))
                     for surface, rect in lines:
                         self.screen.blit(surface, rect)
                         y_offset += 15 * self.scale_factor
                     
-                    y_offset += 2 * self.scale_factor  # Space after definition
+                    y_offset += 2 * self.scale_factor
                 
                 y_offset += 2 * self.scale_factor
-
-            elif move.get('type') == 'pass':  # Pass move
+                
+            elif move.get('type') == 'pass':
                 player_text = f"{move['username']}: Passed turn"
-                player_surface = self.info_font.render(player_text, True, (0, 0, 0))
-                if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
-                    self.screen.blit(player_surface, (log_x + 25 * self.scale_factor, y_offset))
-                y_offset += 15 * self.scale_factor
-                y_offset += 2 * self.scale_factor  # Space after pass move
-            elif move.get('type') == 'game_end':  # Game end move
-                # Draw final scores
+                player_surface = self._get_cached_text_surface(player_text, self.info_font)
+                self.screen.blit(player_surface, (log_x + 25 * self.scale_factor, y_offset))
+                y_offset += 15 * self.scale_factor + 2 * self.scale_factor
+                
+            elif move.get('type') == 'game_end':
                 scores_text = "Final Scores:"
-                scores_surface = self.info_font.render(scores_text, True, (0, 0, 0))
-                if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
-                    self.screen.blit(scores_surface, (log_x + 25 * self.scale_factor, y_offset))
+                scores_surface = self._get_cached_text_surface(scores_text, self.info_font)
+                self.screen.blit(scores_surface, (log_x + 25 * self.scale_factor, y_offset))
                 y_offset += 20 * self.scale_factor
                 
-                # Draw each player's score
                 for username, score in move.get('scores', {}).items():
                     score_text = f"{username}: {score} points"
-                    score_surface = self.info_font.render(score_text, True, (0, 0, 0))
-                    if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
-                        self.screen.blit(score_surface, (log_x + 35 * self.scale_factor, y_offset))
+                    score_surface = self._get_cached_text_surface(score_text, self.info_font)
+                    self.screen.blit(score_surface, (log_x + 35 * self.scale_factor, y_offset))
                     y_offset += 20 * self.scale_factor
-                y_offset += 2 * self.scale_factor  # Space after game end
-            elif move.get('type') == 'exchange':  # Exchange move
-                # Draw exchange text
-                text = f"{move['username']}: Exchanged tiles"
-
-                lines = self._wrap_text(self.PLAYER_LIST_WIDTH - 40 * self.scale_factor, text, self.info_font, (log_x + 25 * self.scale_factor, y_offset), 15)
+                y_offset += 2 * self.scale_factor
+                
+            elif move.get('type') in ['exchange', 'message']:
+                text = f"{move['username']}: Exchanged tiles" if move.get('type') == 'exchange' else move.get('message')
+                color = move.get('color', (0, 0, 0)) if move.get('type') == 'message' else (0, 0, 0)
+                
+                lines = self._wrap_text(self.PLAYER_LIST_WIDTH - 40 * self.scale_factor, text, self.info_font, (log_x + 25 * self.scale_factor, y_offset), 15 * self.scale_factor, color=color)
                 for surface, rect in lines:
                     self.screen.blit(surface, rect)
                     y_offset += 15 * self.scale_factor
-
-                y_offset += 2 * self.scale_factor  # Space after exchange move
-            elif move.get('type') == 'message':  # Exchange move
-                # Draw exchange text
-                text = move.get('message')
-
-                lines = self._wrap_text(self.PLAYER_LIST_WIDTH - 40 * self.scale_factor, text, self.info_font, (log_x + 25 * self.scale_factor, y_offset), 15, color=move.get('color'))
-                for surface, rect in lines:
-                    self.screen.blit(surface, rect)
-                    y_offset += 15 * self.scale_factor
-
-                y_offset += 2 * self.scale_factor  # Space after exchange move
+                y_offset += 2 * self.scale_factor
         
         # Reset clipping
         self.screen.set_clip(None)
@@ -2997,6 +2980,18 @@ class ScrabbleClient:
             lines.append(' '.join(current_line))
         
         return len(lines)
+
+    def _get_cached_text_surface(self, text, font, color=(0, 0, 0)):
+        """Get a cached text surface or create and cache a new one."""
+        cache_key = (text, font, color)
+        if cache_key not in self.text_cache:
+            self.text_cache[cache_key] = font.render(text, True, color)
+        return self.text_cache[cache_key]
+
+    def _clear_text_cache(self):
+        """Clear the text cache when font sizes change."""
+        self.text_cache.clear()
+        self.move_heights.clear()
 
 def main():
     """Entry point for the application."""
