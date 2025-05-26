@@ -1,4 +1,5 @@
 import pygame
+import pygame.gfxdraw
 import socket
 import threading
 import json
@@ -7,6 +8,7 @@ import os
 import random
 import traceback
 import time
+import math
 
 
 class ScrabbleClient:
@@ -847,6 +849,37 @@ class ScrabbleClient:
                                                 y=box_y + box_height - 20 * self.scale_factor)
         self.screen.blit(instructions, instructions_rect)
 
+    def _draw_star(self, surface, x, y, n_points, TILE_SIZE, fill_color=(255, 223, 0), outline_color=(255, 200, 50)):
+        center = pygame.math.Vector2(x + TILE_SIZE // 2, y + TILE_SIZE // 2)
+        outer_radius = TILE_SIZE * 0.4
+        inner_radius = TILE_SIZE * 0.18
+        angle = -math.pi / 2  # start angle pointing up
+        step = math.pi / n_points
+
+        points = []
+        for i in range(n_points * 2):
+            r = outer_radius if i % 2 == 0 else inner_radius
+            px = center[0] + r * math.cos(angle)
+            py = center[1] + r * math.sin(angle)
+            points.append((px, py))
+            angle += step
+
+        # Outside
+        pygame.gfxdraw.filled_polygon(surface, points, outline_color)
+        pygame.gfxdraw.aapolygon(surface, points, outline_color)
+
+        points = []
+        for i in range(n_points * 2):
+            r = 0.26667 * TILE_SIZE if i % 2 == 0 else 0.12 * TILE_SIZE
+            px = center[0] + r * math.cos(angle)
+            py = center[1] + r * math.sin(angle)
+            points.append((px, py))
+            angle += step
+
+        # Inside
+        pygame.gfxdraw.filled_polygon(surface, points, fill_color)
+        pygame.gfxdraw.aapolygon(surface, points, fill_color)
+
     def _draw_board_tiles(self):
         """Draw the game board, tile rack, info panel, and buttons."""
         for r in range(self.BOARD_SIZE):
@@ -907,9 +940,12 @@ class ScrabbleClient:
 
                     # Draw special tile text (e.g. TW, DL)
                     if special:
-                        text = self.font.render(special, True, (0, 0, 0))
-                        text_rect = text.get_rect(center=(x + self.TILE_SIZE // 2, y + self.TILE_SIZE // 2))
-                        self.screen.blit(text, text_rect)
+                        if special == "*":
+                            self._draw_star(self.screen, x, y, 5, self.TILE_SIZE, fill_color=(135, 206, 250), outline_color=(25, 25, 112))
+                        else:    
+                            text = self.font.render(special, True, (0, 0, 0))
+                            text_rect = text.get_rect(center=(x + self.TILE_SIZE // 2, y + self.TILE_SIZE // 2))
+                            self.screen.blit(text, text_rect)
 
                 # Highlight selected board cell
                 if self.selected_board_cell == (r, c):
