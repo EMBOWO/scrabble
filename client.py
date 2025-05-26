@@ -1215,7 +1215,7 @@ class ScrabbleClient:
         # Background for info panel
         info_bg = pygame.Rect(self.MARGIN * 0.5, info_y, info_width, info_height)
         pygame.draw.rect(self.screen, (240, 240, 240), info_bg)
-        pygame.draw.rect(self.screen, (150, 150, 150), info_bg, 1)
+        pygame.draw.rect(self.screen, (150, 150, 150), info_bg, 2)
         
         # Calculate column positions
         first_col_x = self.MARGIN * 0.5 + 10 * self.scale_factor
@@ -1444,25 +1444,9 @@ class ScrabbleClient:
                 username = f"{player['username']} (you)" if player['username'] == self.username else player['username']
                 text = f"{username}: {status}"
                 
-                # Wrap text if it's too long
-                words = text.split()
-                lines = []
-                current_line = []
-                for word in words:
-                    test_line = ' '.join(current_line + [word])
-                    if self.info_font.size(test_line)[0] <= self.PLAYER_LIST_WIDTH - 20 * self.scale_factor:  # 20px margin
-                        current_line.append(word)
-                    else:
-                        lines.append(' '.join(current_line))
-                        current_line = [word]
-                if current_line:
-                    lines.append(' '.join(current_line))
-                
-                # Draw each line
-                for line in lines:
-                    player_surface = self.info_font.render(line, True, color)
-                    player_rect = player_surface.get_rect(x=player_x + 10, y=y_pos)
-                    self.screen.blit(player_surface, player_rect)
+                lines = self._wrap_text(self.PLAYER_LIST_WIDTH - 20 * self.scale_factor, text, self.info_font, (player_x + 10 * self.scale_factor, y_pos), 15, color=color)
+                for surface, rect in lines:
+                    self.screen.blit(surface, rect)
                     y_pos += 15 * self.scale_factor
             else:
                 # After game start, show points, turn, and timer
@@ -2346,18 +2330,7 @@ class ScrabbleClient:
                 move_height += 25  # Word tiles
                 # Add height for definition lines
                 definition = word_info['definition']
-                words = definition.split()
-                lines = []
-                current_line = []
-                for word in words:
-                    if len(' '.join(current_line + [word])) * 6 * self.scale_factor < self.PLAYER_LIST_WIDTH - 40 * self.scale_factor:
-                        current_line.append(word)
-                    else:
-                        lines.append(' '.join(current_line))
-                        current_line = [word]
-                if current_line:
-                    lines.append(' '.join(current_line))
-                move_height += len(lines) * 15
+                move_height += self._get_wrapped_line_count(self.PLAYER_LIST_WIDTH - 25 * self.scale_factor, definition, self.info_font) * 15
                 move_height += 2  # Space after definition
             move_height += 2  # Space between moves
         elif move.get('type') == 'pass':  # Pass move
@@ -2369,37 +2342,87 @@ class ScrabbleClient:
         elif move.get('type') == 'message':  # Exchange move
             # Draw exchange text
             text = move.get('message')
-            words = text.split()
-            lines = []
-            current_line = []
-            for word in words:
-                if len(' '.join(current_line + [word])) * 6 * self.scale_factor < self.PLAYER_LIST_WIDTH - 40 * self.scale_factor:
-                    current_line.append(word)
-                else:
-                    lines.append(' '.join(current_line))
-                    current_line = [word]
-            if current_line:
-                lines.append(' '.join(current_line))
-            move_height += len(lines) * 15
+            move_height += self._get_wrapped_line_count(self.PLAYER_LIST_WIDTH - 40 * self.scale_factor, text, self.info_font) * 15
             move_height += 2  # Space after exchange move
         elif move.get('type') == 'exchange':  # Exchange move
             # Draw exchange text
             text = f"{move['username']}: Exchanged tiles"
-            words = text.split()
-            lines = []
-            current_line = []
-            for word in words:
-                if len(' '.join(current_line + [word])) * 6 * self.scale_factor < self.PLAYER_LIST_WIDTH - 40 * self.scale_factor:
-                    current_line.append(word)
-                else:
-                    lines.append(' '.join(current_line))
-                    current_line = [word]
-            if current_line:
-                lines.append(' '.join(current_line))
-            move_height += len(lines) * 15
+            move_height += self._get_wrapped_line_count(self.PLAYER_LIST_WIDTH - 40 * self.scale_factor, text, self.info_font) * 15
             move_height += 2  # Space after exchange move
         
         return move_height * self.scale_factor
+    
+    def _wrap_text(self, width, text, font, top_left_pos, line_offset, color=(0, 0, 0)):
+        """Wrap text to fit within a specified width, with hyphenation for long words.
+        
+        Args:
+            width (int): Maximum width in pixels for each line
+            text (str): Text to wrap
+            font (pygame.font.Font): Font to use for rendering
+            top_left_pos (tuple): (x, y) coordinates for the starting position
+            line_offset (int): Vertical spacing between lines in pixels
+            
+        Returns:
+            list: List of (surface, rect) tuples for each line of text
+        """
+        words = text.split()
+        lines = []
+        current_line = []
+        x, y = top_left_pos
+        
+        for word in words:
+            # Get the width of the word
+            word_width = font.size(word)[0]
+            
+            # If a single word is too long, we need to hyphenate it
+            if word_width > width:
+                # Split the word into parts that fit within width
+                remaining = word
+                while remaining:
+                    # Find the maximum number of characters that fit
+                    for i in range(len(remaining), 0, -1):
+                        test_width = font.size(remaining[:i] + '-')[0]
+                        if test_width <= width:
+                            # Add the hyphenated part to current line
+                            if current_line:
+                                lines.append(' '.join(current_line))
+                                current_line = []
+                            lines.append(remaining[:i] + '-')
+                            remaining = remaining[i:]
+                            break
+                    else:
+                        # If no characters fit, force at least one character
+                        if current_line:
+                            lines.append(' '.join(current_line))
+                            current_line = []
+                        lines.append(remaining[0] + '-')
+                        remaining = remaining[1:]
+                continue
+            
+            # Check if adding this word would exceed the width
+            test_line = ' '.join(current_line + [word])
+            test_width = font.size(test_line)[0]
+            
+            if test_width <= width:
+                current_line.append(word)
+            else:
+                # Current line is full, add it to lines and start a new one
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+        
+        # Add the last line if it's not empty
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        # Create surfaces and rects for each line
+        rendered_lines = []
+        for i, line in enumerate(lines):
+            surface = font.render(line, True, color)  # Default black color
+            rect = surface.get_rect(x=x, y=y + i * line_offset)
+            rendered_lines.append((surface, rect))
+        
+        return rendered_lines
 
     def draw_move_log(self):
         """Draw the move log box."""
@@ -2499,33 +2522,6 @@ class ScrabbleClient:
                 
                 # Draw each word
                 for word_info in move['words']:
-                    # Calculate word height
-                    word_height = 25 * self.scale_factor  # Word tiles
-                    definition = word_info['definition']
-                    words = definition.split()
-                    lines = []
-                    current_line = []
-                    for word in words:
-                        if len(' '.join(current_line + [word])) * 6 * self.scale_factor < self.PLAYER_LIST_WIDTH - 40 * self.scale_factor:
-                            current_line.append(word)
-                        else:
-                            lines.append(' '.join(current_line))
-                            current_line = [word]
-                    if current_line:
-                        lines.append(' '.join(current_line))
-                    word_height += len(lines) * 15 * self.scale_factor
-                    word_height += 2 * self.scale_factor  # Space after definition
-                    
-                    # Skip if this word would be completely below the visible area
-                    if y_offset + word_height < log_y + 30 * self.scale_factor:
-                        y_offset += word_height
-                        continue
-                    
-                    # Skip if this word would be completely above the visible area
-                    if y_offset > log_y + self.move_log_height:
-                        y_offset += word_height
-                        continue
-                    
                     # Draw word with colored tiles
                     x_offset = log_x + 10 * self.scale_factor
                     for row, col, letter, square_type in word_info['positions']:
@@ -2567,25 +2563,10 @@ class ScrabbleClient:
                     # Draw definition
                     y_offset += 25 * self.scale_factor
                     definition = word_info['definition']
-                    # Split definition into multiple lines if too long
-                    words = definition.split()
-                    lines = []
-                    current_line = []
-                    for word in words:
-                        if len(' '.join(current_line + [word])) * 6 * self.scale_factor < self.PLAYER_LIST_WIDTH - 40 * self.scale_factor:
-                            current_line.append(word)
-                        else:
-                            lines.append(' '.join(current_line))
-                            current_line = [word]
-                    if current_line:
-                        lines.append(' '.join(current_line))
-                    
-                    for line in lines:
-                        # Always render the line to maintain proper spacing
-                        def_surface = self.info_font.render(line, True, (100, 100, 100))
-                        # Only blit if it's in the visible area
-                        if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
-                            self.screen.blit(def_surface, (log_x + 10 * self.scale_factor, y_offset))
+
+                    lines = self._wrap_text(self.PLAYER_LIST_WIDTH - 25 * self.scale_factor, definition, self.info_font, (log_x + 10 * self.scale_factor, y_offset), 15, color=(100, 100, 100))
+                    for surface, rect in lines:
+                        self.screen.blit(surface, rect)
                         y_offset += 15 * self.scale_factor
                     
                     y_offset += 2 * self.scale_factor  # Space after definition
@@ -2618,44 +2599,22 @@ class ScrabbleClient:
             elif move.get('type') == 'exchange':  # Exchange move
                 # Draw exchange text
                 text = f"{move['username']}: Exchanged tiles"
-                words = text.split()
-                lines = []
-                current_line = []
-                for word in words:
-                    if len(' '.join(current_line + [word])) * 6 * self.scale_factor < self.PLAYER_LIST_WIDTH - 40 * self.scale_factor:
-                        current_line.append(word)
-                    else:
-                        lines.append(' '.join(current_line))
-                        current_line = [word]
-                if current_line:
-                    lines.append(' '.join(current_line))
-                # Draw exchange text
-                for line in lines:
-                    player_surface = self.info_font.render(line, True, (0, 0, 0))
-                    if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
-                        self.screen.blit(player_surface, (log_x + 25 * self.scale_factor, y_offset))
+
+                lines = self._wrap_text(self.PLAYER_LIST_WIDTH - 40 * self.scale_factor, text, self.info_font, (log_x + 25 * self.scale_factor, y_offset), 15)
+                for surface, rect in lines:
+                    self.screen.blit(surface, rect)
                     y_offset += 15 * self.scale_factor
+
                 y_offset += 2 * self.scale_factor  # Space after exchange move
             elif move.get('type') == 'message':  # Exchange move
                 # Draw exchange text
                 text = move.get('message')
-                words = text.split()
-                lines = []
-                current_line = []
-                for word in words:
-                    if len(' '.join(current_line + [word])) * 6 * self.scale_factor < self.PLAYER_LIST_WIDTH - 40 * self.scale_factor:
-                        current_line.append(word)
-                    else:
-                        lines.append(' '.join(current_line))
-                        current_line = [word]
-                if current_line:
-                    lines.append(' '.join(current_line))
-                # Draw exchange text
-                for line in lines:
-                    player_surface = self.info_font.render(line, True, move.get('color'))
-                    if log_y + 30 * self.scale_factor <= y_offset <= log_y + self.move_log_height:
-                        self.screen.blit(player_surface, (log_x + 25 * self.scale_factor, y_offset))
+
+                lines = self._wrap_text(self.PLAYER_LIST_WIDTH - 40 * self.scale_factor, text, self.info_font, (log_x + 25 * self.scale_factor, y_offset), 15, color=move.get('color'))
+                for surface, rect in lines:
+                    self.screen.blit(surface, rect)
                     y_offset += 15 * self.scale_factor
+
                 y_offset += 2 * self.scale_factor  # Space after exchange move
         
         # Reset clipping
@@ -2976,6 +2935,68 @@ class ScrabbleClient:
         self.board = [['' for _ in range(self.BOARD_SIZE)] for _ in range(self.BOARD_SIZE)]
         self.letter_buffer.clear()
         self.blank_tiles.clear()
+
+    def _get_wrapped_line_count(self, width, text, font):
+        """Calculate the number of lines needed to wrap text within a specified width.
+        
+        Args:
+            width (int): Maximum width in pixels for each line
+            text (str): Text to wrap
+            font (pygame.font.Font): Font to use for measuring
+            
+        Returns:
+            int: Number of lines needed to wrap the text
+        """
+        words = text.split()
+        lines = []
+        current_line = []
+        
+        for word in words:
+            # Get the width of the word
+            word_width = font.size(word)[0]
+            
+            # If a single word is too long, we need to hyphenate it
+            if word_width > width:
+                # Split the word into parts that fit within width
+                remaining = word
+                while remaining:
+                    # Find the maximum number of characters that fit
+                    for i in range(len(remaining), 0, -1):
+                        test_width = font.size(remaining[:i] + '-')[0]
+                        if test_width <= width:
+                            # Add the hyphenated part to current line
+                            if current_line:
+                                lines.append(' '.join(current_line))
+                                current_line = []
+                            lines.append(remaining[:i] + '-')
+                            remaining = remaining[i:]
+                            break
+                    else:
+                        # If no characters fit, force at least one character
+                        if current_line:
+                            lines.append(' '.join(current_line))
+                            current_line = []
+                        lines.append(remaining[0] + '-')
+                        remaining = remaining[1:]
+                continue
+            
+            # Check if adding this word would exceed the width
+            test_line = ' '.join(current_line + [word])
+            test_width = font.size(test_line)[0]
+            
+            if test_width <= width:
+                current_line.append(word)
+            else:
+                # Current line is full, add it to lines and start a new one
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+        
+        # Add the last line if it's not empty
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        return len(lines)
 
 def main():
     """Entry point for the application."""
