@@ -187,27 +187,28 @@ class ScrabbleClient:
 
     def _update_font_sizes(self):
         """Update font sizes based on current tile size."""
-        # Base font sizes at tile size 40
-        base_tile_size = 40
-        scale_factor = self.TILE_SIZE / base_tile_size
+
+        font = None
         
         # Only scale the main font used for letters and special tiles
-        self.font_size = int(24 * scale_factor)  # Main font for letters and special tiles
-        self.score_font_size = int(16 * scale_factor)  # Score numbers for letter tiles
-        self.button_font_size = int(30 * scale_factor)  # Button text - now scales with tile size
-        self.info_font_size = int(18 * scale_factor)  # Info text
-        self.title_font_size = int(36 * scale_factor)  # Title text
-        self.header_font_size = int(24 * scale_factor)  # Smaller titles
-        self.small_button_font_size = int(20 * scale_factor)
+        self.font_size = int(24 * self.scale_factor)  # Main font for letters and special tiles
+        self.score_font_size = int(16 * self.scale_factor)  # Score numbers for letter tiles
+        self.button_font_size = int(30 * self.scale_factor)  # Button text - now scales with tile size
+        self.info_font_size = int(18 * self.scale_factor)  # Info text
+        self.title_font_size = int(36 * self.scale_factor)  # Title text
+        self.header_font_size = int(24 * self.scale_factor)  # Smaller titles
+        self.small_button_font_size = int(20 * self.scale_factor)
+        self.info_box_font_size = int(20 * self.scale_factor)
         
         # Create font objects
-        self.font = pygame.font.SysFont(None, self.font_size)
-        self.score_font = pygame.font.SysFont(None, self.score_font_size)
-        self.info_font = pygame.font.SysFont(None, self.info_font_size)
-        self.button_font = pygame.font.SysFont(None, self.button_font_size)
-        self.title_font = pygame.font.SysFont(None, self.title_font_size)
-        self.header_font = pygame.font.SysFont(None, self.header_font_size)
-        self.small_button_font = pygame.font.SysFont(None, self.small_button_font_size)
+        self.font = pygame.font.SysFont(font, self.font_size)
+        self.score_font = pygame.font.SysFont(font, self.score_font_size)
+        self.info_font = pygame.font.SysFont(font, self.info_font_size)
+        self.button_font = pygame.font.SysFont(font, self.button_font_size)
+        self.title_font = pygame.font.SysFont(font, self.title_font_size)
+        self.header_font = pygame.font.SysFont(font, self.header_font_size)
+        self.small_button_font = pygame.font.SysFont(font, self.small_button_font_size)
+        self.info_box_font = pygame.font.SysFont(font, self.info_box_font_size)
 
         self._clear_text_cache()  # Clear cache when fonts change
 
@@ -1232,32 +1233,32 @@ class ScrabbleClient:
         
         # First column: Tiles remaining and rack count
         tiles_text = f"Tiles in bag: {self.tiles_remaining}"
-        tiles_surface = self.info_font.render(tiles_text, True, (0, 0, 0))
-        self.screen.blit(tiles_surface, (first_col_x, info_y + 10 * self.scale_factor))
+        tiles_surface = self.info_box_font.render(tiles_text, True, (0, 0, 0))
+        self.screen.blit(tiles_surface, (first_col_x, info_y + 12 * self.scale_factor))
         
         rack_text = f"Your tiles: {len(self.tile_rack)}/7"
-        rack_surface = self.info_font.render(rack_text, True, (0, 0, 0))
-        self.screen.blit(rack_surface, (first_col_x, info_y + 35 * self.scale_factor))
+        rack_surface = self.info_box_font.render(rack_text, True, (0, 0, 0))
+        self.screen.blit(rack_surface, (first_col_x, info_y + info_height - 25 * self.scale_factor))
         
         # Second column: Buffer info and turn status
         if self.letter_buffer:
             buffer_text = f"Placed letters: {len(self.letter_buffer)}"
-            buffer_surface = self.info_font.render(buffer_text, True, (0, 0, 0))
-            self.screen.blit(buffer_surface, (second_col_x, info_y + 10 * self.scale_factor))
+            buffer_surface = self.info_box_font.render(buffer_text, True, (0, 0, 0))
+            self.screen.blit(buffer_surface, (second_col_x, info_y + 12 * self.scale_factor))
         
         # Show waiting message if not started
         if not self.game_started:
             wait_text = "Waiting..."
-            wait_surface = self.info_font.render(wait_text, True, (200, 0, 0))
-            self.screen.blit(wait_surface, (second_col_x, info_y + 35 * self.scale_factor))
+            wait_surface = self.info_box_font.render(wait_text, True, (200, 0, 0))
+            self.screen.blit(wait_surface, (second_col_x, info_y + info_height - 25 * self.scale_factor))
         # Show "Your turn" message if it's the current player's turn
         elif self.game_started and not self.game_ended:
             # Find the current player's username
             current_player = next((player for player in self.players if player.get("current_turn", False)), None)
             if current_player and current_player.get("username") == self.username:
                 turn_text = "Your turn"
-                turn_surface = self.info_font.render(turn_text, True, (0, 200, 0))  # Green color
-                self.screen.blit(turn_surface, (second_col_x, info_y + 35 * self.scale_factor))
+                turn_surface = self.info_box_font.render(turn_text, True, (0, 200, 0))  # Green color
+                self.screen.blit(turn_surface, (second_col_x, info_y + info_height - 25 * self.scale_factor))
 
     def _draw_error_box(self):
         """Draw a separate error box below the info panel if there is an error message."""
