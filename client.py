@@ -18,7 +18,7 @@ class ScrabbleClient:
     RACK_HEIGHT = TILE_SIZE + 20
     INFO_HEIGHT = 60
     BUTTON_MARGIN = 10
-    PLAYER_LIST_WIDTH = 200  # Width for player list
+    PLAYER_LIST_WIDTH = 300  # Width for player list
     WIDTH = TILE_SIZE * BOARD_SIZE + MARGIN * 2 + PLAYER_LIST_WIDTH + 20  # Added width for player list
     # Calculate button dimensions
     button_spacing = int(10 * (TILE_SIZE / 40))  # Scale spacing with tile size
@@ -991,8 +991,7 @@ class ScrabbleClient:
                     else:
                         score = self.LETTER_VALUES.get('?') if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
                     
-                    score_font = pygame.font.SysFont(None, 16)
-                    score_text = score_font.render(str(score), True, (80, 80, 80))
+                    score_text = self.score_font.render(str(score), True, (80, 80, 80))
                     score_rect = score_text.get_rect(bottomright=(self.TILE_SIZE - 3, self.TILE_SIZE - 2))
                     ghost_surface.blit(score_text, score_rect)
                     
@@ -1029,8 +1028,7 @@ class ScrabbleClient:
             else:
                 score = self.LETTER_VALUES.get('?') if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
             
-            score_font = pygame.font.SysFont(None, 16)
-            score_text = score_font.render(str(score), True, (80, 80, 80))
+            score_text = self.score_font.render(str(score), True, (80, 80, 80))
             score_rect = score_text.get_rect(bottomright=(x + self.TILE_SIZE - 3, y + self.TILE_SIZE - 2))
             self.screen.blit(score_text, score_rect)
 
@@ -1243,8 +1241,7 @@ class ScrabbleClient:
             else:
                 score = self.LETTER_VALUES.get('?') if letter == '?' else self.LETTER_VALUES.get(letter.upper(), 0)
             
-            score_font = pygame.font.SysFont(None, 16)
-            score_text = score_font.render(str(score), True, (80, 80, 80))
+            score_text = self.score_font.render(str(score), True, (80, 80, 80))
             score_rect = score_text.get_rect(bottomright=(x + self.TILE_SIZE - 3, y + self.TILE_SIZE - 2))
             self.screen.blit(score_text, score_rect)
 
@@ -1844,10 +1841,30 @@ class ScrabbleClient:
         """Handle mouse click events."""
         x, y = pos
         
-        # If showing blank dialog, only handle clicks within the dialog
+        # If showing blank dialog, handle clicks within the dialog
         if self.showing_blank_dialog:
-            if not self.blank_dialog_cancel_button.collidepoint(x, y):
+            # Check for letter button clicks
+            for letter, button_rect in self.blank_dialog_letter_buttons.items():
+                if button_rect.collidepoint(x, y):
+                    row, col = self.blank_pos
+                    self.letter_buffer[(row, col)] = letter
+                    self.blank_tiles.add((row, col))  # Mark this as a blank tile
+                    self.selected_rack_index = None  # Deselect after placing
+                    self.selected_board_cell = None  # Deselect after placing
+                    self.showing_blank_dialog = False
+                    self.blank_pos = None
+                    return
+            
+            # Check for cancel button click
+            if self.blank_dialog_cancel_button.collidepoint(x, y):
+                self.showing_blank_dialog = False
+                # Return the blank tile to the rack
+                self.tile_rack.append('?')
+                self.blank_pos = None
                 return
+            
+            # If we clicked outside the dialog, ignore the click
+            return
             
         # If showing unseen tiles dialog, only handle clicks within the dialog
         if self.showing_unseen_tiles:
@@ -2840,8 +2857,8 @@ class ScrabbleClient:
         self.screen.blit(overlay, (0, 0))
         
         # Draw dialog box
-        dialog_width = 300
-        dialog_height = 200  # Increased height to accommodate buttons
+        dialog_width = 400  # Increased width to accommodate letter grid
+        dialog_height = 400  # Increased height to accommodate letter grid
         dialog_x = (self.WIDTH - dialog_width) // 2
         dialog_y = (self.HEIGHT - dialog_height) // 2
         
@@ -2857,7 +2874,7 @@ class ScrabbleClient:
         button_font = pygame.font.SysFont(None, 20) # Fixed size for button text
         
         # Draw instructions
-        text = title_font.render("Type a letter for the blank tile", True, (0, 0, 0))
+        text = title_font.render("Select a letter for the blank tile", True, (0, 0, 0))
         text_rect = text.get_rect(centerx=dialog_x + dialog_width//2, 
                                 y=dialog_y + 20)
         self.screen.blit(text, text_rect)
@@ -2868,18 +2885,45 @@ class ScrabbleClient:
         tile_y = dialog_y + 50
         
         # Draw tile background
-        pygame.draw.rect(self.screen, (255, 255, 255), (tile_x, tile_y, tile_size, tile_size))  # Purple background
+        pygame.draw.rect(self.screen, (255, 255, 255), (tile_x, tile_y, tile_size, tile_size))
         pygame.draw.rect(self.screen, (0, 0, 0), (tile_x, tile_y, tile_size, tile_size), 2)
         
-        # Draw question mark in white
+        # Draw question mark in purple
         question_mark = letter_font.render("?", True, (128, 0, 128))
         question_rect = question_mark.get_rect(center=(tile_x + tile_size//2, tile_y + tile_size//2))
         self.screen.blit(question_mark, question_rect)
         
-        # Draw point value (0) in white
+        # Draw point value (0) in gray
         value_text = value_font.render(str(self.LETTER_VALUES.get('?')), True, (80, 80, 80))
         value_rect = value_text.get_rect(bottomright=(tile_x + tile_size - 3, tile_y + tile_size - 2))
         self.screen.blit(value_text, value_rect)
+
+        # Create letter buttons grid
+        letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        button_size = 35
+        buttons_per_row = 7
+        spacing = 5
+        start_x = dialog_x + (dialog_width - (buttons_per_row * (button_size + spacing))) // 2
+        start_y = dialog_y + 120  # Start below the blank tile
+
+        # Store letter buttons for click detection
+        self.blank_dialog_letter_buttons = {}
+        
+        for i, letter in enumerate(letters):
+            row = i // buttons_per_row
+            col = i % buttons_per_row
+            x = start_x + col * (button_size + spacing)
+            y = start_y + row * (button_size + spacing)
+            
+            button_rect = pygame.Rect(x, y, button_size, button_size)
+            pygame.draw.rect(self.screen, (200, 200, 200), button_rect)
+            pygame.draw.rect(self.screen, (0, 0, 0), button_rect, 2)
+            
+            letter_text = letter_font.render(letter, True, (0, 0, 0))
+            letter_rect = letter_text.get_rect(center=button_rect.center)
+            self.screen.blit(letter_text, letter_rect)
+            
+            self.blank_dialog_letter_buttons[letter] = button_rect
 
         # Draw cancel button
         cancel_button = pygame.Rect(dialog_x + (dialog_width - 100) // 2,
