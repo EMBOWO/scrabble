@@ -24,7 +24,7 @@ class ScrabbleServer:
     # Timer settings
     DEFAULT_TIME_PER_PLAYER = 25  # minutes
     DEFAULT_OVERTIME = 10  # minutes
-    OVERTIME_PENALTY = 10  # points per minute
+    DEFAULT_OVERTIME_PENALTY = 10  # points per minute
     TIMER_CHECK_INTERVAL = 1.0  # seconds
     
     # Standard Scrabble tile distribution
@@ -74,6 +74,7 @@ class ScrabbleServer:
         # Timer management
         self.time_per_player = self.DEFAULT_TIME_PER_PLAYER  # minutes
         self.overtime = self.DEFAULT_OVERTIME  # minutes
+        self.overtime_penalty = self.DEFAULT_OVERTIME_PENALTY
         self.player_timers = {}  # {username: remaining_time_in_seconds}
         self.player_overtime = {}  # {username: overtime_used_in_seconds}
         self.timer_thread = None
@@ -1377,8 +1378,16 @@ class ScrabbleServer:
                         print("Overtime cannot be negative")
                         continue
                     self.overtime = overtime_value
+
+                penalty_input = input(f"Enter overtime penalty (default: {self.DEFAULT_OVERTIME_PENALTY}): ").strip()
+                if penalty_input:
+                    penalty_value = int(penalty_input)
+                    if penalty_value < 0:
+                        print("Penalty cannot be negative")
+                        continue
+                    self.overtime_penalty = penalty_value
                 
-                print(f"Timer settings: {self.time_per_player} minutes + {self.overtime} minutes overtime")
+                print(f"Timer settings: {self.time_per_player} minutes + {self.overtime} minutes overtime ({self.overtime_penalty} pt penalty)")
                 return
             except ValueError:
                 print("Please enter a valid number")
@@ -1448,7 +1457,7 @@ class ScrabbleServer:
                             
                             # Apply penalty if we crossed 0:00 or any other minute boundary
                             if (prev_time > 0 and self.player_timers[current_player] <= 0) or (prev_minute != current_minute and self.player_timers[current_player] < 0):
-                                penalty = self.OVERTIME_PENALTY
+                                penalty = self.overtime_penalty
                                 self.player_points[current_player] = self.player_points[current_player] - penalty
                                 
                                 # Log overtime penalty
