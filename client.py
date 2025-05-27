@@ -3034,7 +3034,7 @@ def main():
     """Entry point for the application."""
     client = ScrabbleClient()
     client.run()
-
+    input("PRESS ANY KEY TO EXIT")
 
 if __name__ == "__main__":
     main()
