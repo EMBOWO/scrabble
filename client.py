@@ -20,8 +20,8 @@ class ScrabbleClient:
     BUTTON_MARGIN = TILE_SIZE * 0.25
     PLAYER_LIST_WIDTH = TILE_SIZE * 7.5
     BOARD_START_X = MARGIN * 0.5 + 6 * TILE_SIZE + MARGIN * 0.5  # Start board after buttons
-    WIDTH = TILE_SIZE * BOARD_SIZE + MARGIN * 2 + PLAYER_LIST_WIDTH + TILE_SIZE * 6
-    HEIGHT = MARGIN + TILE_SIZE * BOARD_SIZE + TILE_SIZE + MARGIN * 0.25 + MARGIN * 0.5
+    WIDTH = int(TILE_SIZE * BOARD_SIZE + MARGIN * 2 + PLAYER_LIST_WIDTH + TILE_SIZE * 6)
+    HEIGHT = int(MARGIN + TILE_SIZE * BOARD_SIZE + TILE_SIZE + MARGIN * 0.25 + MARGIN * 0.5)
     
     HOST = 'localhost'  # Default to localhost, will be overridden by user input
     PORT = 12345
@@ -2199,8 +2199,8 @@ class ScrabbleClient:
             self.PLAYER_LIST_WIDTH = self.TILE_SIZE * 7.5
             self.RACK_HEIGHT = self.TILE_SIZE + self.MARGIN * 0.5
 
-            self.WIDTH = self.TILE_SIZE * self.BOARD_SIZE + self.MARGIN * 2 + self.PLAYER_LIST_WIDTH + button_width
-            self.HEIGHT = self.MARGIN + self.TILE_SIZE * self.BOARD_SIZE + self.TILE_SIZE + 10 * self.scale_factor + self.MARGIN * 0.5
+            self.WIDTH = int(self.TILE_SIZE * self.BOARD_SIZE + self.MARGIN * 2 + self.PLAYER_LIST_WIDTH + button_width)
+            self.HEIGHT = int(self.MARGIN + self.TILE_SIZE * self.BOARD_SIZE + self.TILE_SIZE + 10 * self.scale_factor + self.MARGIN * 0.5)
             
             self.BOARD_START_X = self.MARGIN * 0.5 + button_width + self.MARGIN * 0.5  # Start board after buttons
             
