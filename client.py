@@ -2340,6 +2340,9 @@ class ScrabbleClient:
         
         print("[DEBUG] Quitting pygame")
         pygame.quit()
+
+        input("PRESS ANY KEY TO CONTINUE")
+        
         print("Client shutdown complete")
         sys.exit(0)
 
@@ -3034,7 +3037,6 @@ def main():
     """Entry point for the application."""
     client = ScrabbleClient()
     client.run()
-    input("PRESS ANY KEY TO EXIT")
 
 if __name__ == "__main__":
     main()
