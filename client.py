@@ -1735,6 +1735,10 @@ class ScrabbleClient:
         # Don't clear all blank tiles, only remove the ones we just returned
         self.selected_rack_index = None
         self.selected_board_cell = None
+
+        self.dragging_from_board = False
+        self.dragging_tile = False
+
         print("All letters returned to rack")
 
     def _send_word(self):
@@ -2956,6 +2960,8 @@ class ScrabbleClient:
         self.tile_rack = []
         self.move_log = []
         self.board = [['' for _ in range(self.BOARD_SIZE)] for _ in range(self.BOARD_SIZE)]
+        self.dragging_tile = False
+        self.dragging_from_board = False
         self.letter_buffer.clear()
         self.blank_tiles.clear()
 
