@@ -99,6 +99,8 @@ class ScrabbleServer:
         self.game_ended = False    # Track if game has ended
         self.consecutive_passes = 0  # Track consecutive passes
         self.last_move_was_pass = False  # Track if last move was a pass
+
+        self._recv_buffer = ""
         
         # Dictionary and move tracking
         self.dictionary = {}  # {word: definition}
@@ -256,7 +258,7 @@ class ScrabbleServer:
                 conn.close()
                 return
             conn.settimeout(5.0)
-            username_msg = self._receive_line(conn)
+            _, _, username_msg = self._receive_line(conn)
             if not username_msg.startswith("USERNAME:"):
                 conn.sendall("ERROR:Invalid username format\n".encode())
                 conn.close()
@@ -292,15 +294,27 @@ class ScrabbleServer:
             print(f"Client registration failed: {str(e)}")
             conn.close()
 
+    
     def _receive_line(self, conn):
-        """Helper to read a complete line."""
-        buffer = []
-        while True:
-            chunk = conn.recv(1).decode()
-            if chunk == '\n' or not chunk:
-                break
-            buffer.append(chunk)
-        return ''.join(buffer)
+        """Helper to read a complete line (ending in \n) from the socket."""
+        buffer = self._recv_buffer
+        while self.running:
+            try:
+                chunk = conn.recv(4096).decode()
+                if not chunk:
+                    raise ConnectionResetError("Socket closed by peer")
+                buffer += chunk
+                if '\n' in buffer:
+                    line, buffer = buffer.split('\n', 1)
+                    self._recv_buffer = buffer  # save back for next call
+                    packet = line.strip()
+                    id, ACK_string, message = packet.split(':', 2)
+                    require_ACK = ACK_string == "Y"
+                    return (id, ACK_string, message)
+            except socket.timeout:
+                continue
+            except Exception as e:
+                raise e
 
     def _remove_client(self, conn):
         """Remove client and update all relevant state."""
@@ -828,7 +842,13 @@ class ScrabbleServer:
                 
             while self.running:
                 try:
-                    data = conn.recv(1024).decode().strip()
+                    id, require_ACK, data = self._receive_line(conn)
+                    print(f"[DEBUG] Received client packet {data}")
+                    if require_ACK:
+                        ACK = f"OK:{id}\n"
+                        print(f"[DEBUG] Sending ACK: {ACK}")
+                        conn.sendall(ACK.encode())
+                        print(f"[DEBUG] Sent ACK: {ACK}")
                     if not data:
                         print(f"[DISCONNECT] Client {username or addr} disconnected (no data)")
                         break
@@ -915,6 +935,7 @@ class ScrabbleServer:
 
     def _accept_clients(self):
         """Accept incoming client connections with proper interrupt handling and ESC key support."""
+        self.server_socket.settimeout(0.5)  # Or similar small value
         while self.running:
             try:
                 if msvcrt.kbhit():
@@ -922,9 +943,11 @@ class ScrabbleServer:
                     if key == b'\x1b':
                         print("\n[SERVER] ESC key pressed, shutting down...")
                         self.running = False
+                        self.server_socket.close()
                         break
                 try:
                     conn, addr = self.server_socket.accept()
+                    print(f"[CONNECT] Accepted connection from {addr}")
                     client_thread = threading.Thread(
                         target=self._handle_client, 
                         args=(conn, addr),
@@ -941,6 +964,7 @@ class ScrabbleServer:
             except KeyboardInterrupt:
                 print("\n[SERVER] Keyboard interrupt received in accept loop")
                 self.running = False
+                self.server_socket.close()
                 break
             except Exception as e:
                 if self.running:
