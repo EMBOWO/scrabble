@@ -2,7 +2,6 @@ import pygame
 import pygame.gfxdraw
 import socket
 import threading
-import queue
 import json
 import sys
 import os
@@ -180,15 +179,6 @@ class ScrabbleClient:
         self.showing_unseen_tiles = False
         self.showing_fps = False
         self.scale_factor = 1.0
-
-        # Sender thread
-        self.stop_event = threading.Event()
-        self.send_queue = queue.Queue()
-        self.sender_thread = threading.Thread(target=self._send_loop, daemon=True)
-        self.sender_thread.start()
-        self.ack_queue = queue.Queue()
-        self._recv_buffer = ""
-        self._message_id = 0
         
         # Update font sizes after all initialization
         self._update_font_sizes()
@@ -426,7 +416,7 @@ class ScrabbleClient:
                 print(f"[DEBUG] Sending username: {username}")
                 # Set a timeout for the username response
                 self.sock.settimeout(10.0)
-                self.send_message(f"USERNAME:{username}")
+                self.sock.sendall(f"USERNAME:{username}\n".encode())
                 response = self._receive_line()
                 print(f"[DEBUG] Server response: {response}")
                 if response.startswith("ERROR"):
@@ -485,116 +475,78 @@ class ScrabbleClient:
             self._reset_game_state()
 
     def _receive_line(self):
-        """Helper to read a complete line (ending in \n) from the socket."""
-        while self.running:
+        """Helper to read a complete line from socket."""
+        buffer = []
+        while True:
             try:
-                if self._recv_buffer == "":
-                    chunk = self.sock.recv(4096).decode()
-                    if not chunk:
-                        raise ConnectionResetError("Socket closed by peer")
-                    self._recv_buffer += chunk
-                if '\n' in self._recv_buffer:
-                    line, self._recv_buffer = self._recv_buffer.split('\n', 1)
-                    return line.strip()
+                chunk = self.sock.recv(1).decode()
+                if not chunk:
+                    break
+                if chunk == '\n':
+                    break
+                buffer.append(chunk)
             except socket.timeout:
-                continue
+                print("Timeout while receiving data")
+                break
             except Exception as e:
-                raise e
+                print(f"Error receiving data: {e}")
+                break
+        return ''.join(buffer)
 
     def _receive_messages(self):
-        """Main network thread function to receive messages from server."""
-        self._recv_buffer = ""
+        """Network thread function to receive messages from server."""
+        buffer = ""
         print("Network thread started - waiting for messages...")
-
-        while self.running and self.sock:
-            try:
-                line = self._receive_line()
-                if not line:
-                    continue
-                print(f"[DEBUG] Received line: {repr(line)}")
-
-                if line[:2].upper() == "OK":
-                    self.ack_queue.put(line)
-                    continue
-
-                if line.startswith("ERROR:"):
-                    print(f"Server error: {line[6:]}")
-                    if "shutting down" in line.lower():
-                        print("Server is shutting down, disconnecting...")
-                        self._handle_server_disconnect("Server is shutting down")
-                        break
-                    continue
-
+        while self.running:
+            if self.sock:
                 try:
-                    self._process_server_message(line)
-                except json.JSONDecodeError as e:
-                    print(f"JSON decode error: {e}")
-                    print(f"Raw message was: {repr(line)}")
-                except Exception as e:
-                    print(f"Error processing message: {e}")
-                    print(f"Raw message was: {repr(line)}")
-
-            except ConnectionResetError:
-                print("Connection reset by server")
-                self._handle_server_disconnect("Connection reset by server")
-                break
-            except Exception as e:
-                if self.running:
-                    print(f"Network error: {e}")
-                    self._handle_server_disconnect(f"Network error: {str(e)}")
-                break
-
-    def send_message(self, message, require_ACK=False):
-        id = self._message_id
-        self._message_id = (self._message_id + 1) % 1000000
-        self.send_queue.put({
-            "id": id,
-            "message": message + "\n",
-            "require_ACK": require_ACK
-        })
-    
-    def _send_loop(self):
-        MAX_RETRIES = 3
-        ACK_TIMEOUT = 2.0  # seconds
-
-        while not self.stop_event.is_set():
-            try:
-                packet = self.send_queue.get(timeout=0.5)
-                id = packet.get("id")
-                require_ACK = packet.get("require_ACK")
-                ACK_string = "Y" if require_ACK else "N"
-                message = f"{id}:{ACK_string}:{packet.get("message")}"
-            except queue.Empty:
-                continue  # No message yet; check again
-
-            for attempt in range(1, MAX_RETRIES + 1):
-                try:
-                    print(f"[DEBUG] Sending message (attempt {attempt}): {message}")
-                    self.sock.settimeout(3.0)
-                    self.sock.sendall(message.encode())
-
-                    if not require_ACK:
+                    # Check if socket is actually connected before trying to receive
+                    if not self.sock.getpeername():
+                        print("Socket not connected, waiting...")
+                        time.sleep(0.1)
+                        continue
+                        
+                    data = self.sock.recv(4096).decode()
+                    if not data:
+                        print("Connection closed by server")
+                        self._handle_server_disconnect("Server closed the connection")
                         break
-
-                    # Wait for server ACK
-                    try:
-                        last_ack = self.ack_queue.get(timeout=ACK_TIMEOUT)
-                        if last_ack.upper() == f"OK:{id}":
-                            print(f"[DEBUG] Received ACK for message: {message}")
-                            break  # ACK received, done
-                        else:
-                            print(f"[WARN] Invalid ACK or server rejected move: {last_ack} for move with ID: {id}")
-                    except queue.Empty:
-                        print(f"[WARN] ACK missing for move with ID: {id}")
+                    buffer += data
+                    while '\n' in buffer:
+                        line, buffer = buffer.split('\n', 1)
+                        line = line.strip()
+                        print(f"[DEBUG] Received line: {repr(line)}")  # Debug print
+                        if line:
+                            try:
+                                self._process_server_message(line)
+                            except json.JSONDecodeError as e:
+                                print(f"JSON decode error: {e}")
+                                print(f"Raw message was: {repr(line)}")
+                                if line.startswith("ERROR:"):
+                                    print(f"Server error: {line[6:]}")
+                                    if "shutting down" in line.lower():
+                                        print("Server is shutting down, returning to connection screen...")
+                                        self._handle_server_disconnect("Server is shutting down")
+                                        return
+                                elif line.startswith("OK:"):
+                                    print(f"Server confirmation: {line[3:]}")
+                            except Exception as e:
+                                print(f"Error processing message: {e}")
+                                print(f"Raw message was: {repr(line)}")
                 except socket.timeout:
-                    print(f"[WARN] No ACK received (timeout) on attempt {attempt}")
+                    continue
+                except ConnectionResetError:
+                    print("Connection reset by server")
+                    self._handle_server_disconnect("Connection reset by server")
+                    break
                 except Exception as e:
-                    print(f"[Send Thread Error] {e}")
-                    break  # Don't retry if socket is broken
-
+                    if self.running:
+                        print(f"Network error: {e}")
+                        self._handle_server_disconnect(f"Network error: {str(e)}")
+                    break
             else:
-                print(f"[ERROR] Failed to send message after {MAX_RETRIES} attempts: {message}")
-                # Optionally requeue message or signal error
+                # If no socket, wait a bit before checking again
+                time.sleep(0.1)
 
     def _handle_server_disconnect(self, error_message):
         """Handle server disconnection by returning to connection screen with error message."""
@@ -648,7 +600,10 @@ class ScrabbleClient:
                                 print("[DEBUG] No final scores available")
                                 self.winner = None
                             if self.sock:
-                                self.send_message("DISCONNECT", True)
+                                try:
+                                    self.sock.sendall("DISCONNECT\n".encode())
+                                except:
+                                    pass
                                 # Finally close the socket
                                 try:
                                     self.sock.close()
@@ -697,7 +652,7 @@ class ScrabbleClient:
                         self.ready = True
                         # Request rack update when game starts
                         try:
-                            self.send_message("GET_RACK", True)
+                            self.sock.sendall(b"GET_RACK\n")
                         except Exception as e:
                             print(f"Failed to request rack update: {e}")
                     elif message_type == "board_update":
@@ -1806,7 +1761,7 @@ class ScrabbleClient:
                     blank_positions.extend([str(r), str(c)])
                 batch_move = f"{batch_move}|{','.join(blank_positions)}"
                 print(f"[DEBUG] Sending blank positions: {blank_positions}")  # Debug log
-            self.send_message(batch_move, True)
+            self.sock.sendall(batch_move.encode())
             print(f"Sent word batch with {len(self.letter_buffer)} letters: {batch_move}")
             # Do NOT clear the buffer yet; wait for server confirmation
         except Exception as e:
@@ -1832,7 +1787,7 @@ class ScrabbleClient:
             tiles_needed = 7 - len(self.tile_rack)
             # Request to draw tiles (server will give us what's available)
             draw_request = f"DRAW:{tiles_needed}"
-            self.send_message(draw_request, True)
+            self.sock.sendall(draw_request.encode())
             print(f"Requested to draw {tiles_needed} tiles")
             
         except Exception as e:
@@ -1848,7 +1803,7 @@ class ScrabbleClient:
             # Get the letters to exchange
             tiles = [self.tile_rack[i] for i in sorted(self.tiles_to_exchange)]
             exchange_request = f"EXCHANGE:{','.join(tiles)}"
-            self.send_message(exchange_request, True)
+            self.sock.sendall(exchange_request.encode())
             print(f"Requesting to exchange tiles: {tiles}")
             
             # Reset exchange mode
@@ -1870,7 +1825,7 @@ class ScrabbleClient:
         """
         try:
             message = "READY" if ready else "UNREADY"
-            self.send_message(f"{message}", True)
+            self.sock.sendall(f"{message}\n".encode())
             # Don't set local ready state - wait for server confirmation
         except Exception as e:
             print(f"Failed to send {message}: {e}")
@@ -1972,7 +1927,7 @@ class ScrabbleClient:
         elif self.pass_button.collidepoint(x, y):
             if self.game_started and not self.game_ended:
                 try:
-                    self.send_message("PASS", True)  # Add newline to match server's line-based protocol
+                    self.sock.sendall(b"PASS\n")  # Add newline to match server's line-based protocol
                 except Exception as e:
                     self._set_error(f"Failed to pass turn: {e}")
             return True
@@ -2202,7 +2157,7 @@ class ScrabbleClient:
             elif key == pygame.K_p:  # Pass
                 if self.game_started and self.ready and not self.game_ended:
                     try:
-                        self.send_message("PASS", True)
+                        self.sock.sendall(b"PASS\n")
                     except Exception as e:
                         self._set_error(f"Failed to pass turn: {e}")
             elif key == pygame.K_s:  # Shuffle
@@ -2369,18 +2324,16 @@ class ScrabbleClient:
             print("[DEBUG] Waiting for network thread to finish")
             self.network_thread.join(timeout=2.0)
             print("[DEBUG] Network thread finished")
-
-        # Stop send thread
-        self.stop_event.set()
-        print("[DEBUG] Waiting for send thread to finish")
-        self.sender_thread.join(timeout=2.0)
-        print("[DEBUG] Send thread finished")
         
         # Then handle socket cleanup
         if self.sock:
             try:
                 print("[DEBUG] Attempting to send disconnect message")
-                self.send_message("DISCONNECT", True)
+                try:
+                    self.sock.sendall("DISCONNECT\n".encode())
+                    print("[DEBUG] Disconnect message sent successfully")
+                except Exception as e:
+                    print(f"[ERROR] Failed to send disconnect message: {e}")
                 print("[DEBUG] Closing socket")
                 self.sock.close()
                 print("[DEBUG] Socket closed successfully")
@@ -2392,10 +2345,35 @@ class ScrabbleClient:
         print("[DEBUG] Quitting pygame")
         pygame.quit()
 
-        input("PRESS ENTER TO CONTINUE")
+        input("PRESS ANY KEY TO CONTINUE")
         
         print("Client shutdown complete")
         sys.exit(0)
+
+    def _send_initial_data(self, conn):
+        """Send board and rack to new/reconnected player."""
+        try:
+            # Send board
+            initial_data = json.dumps(self.board).encode() + b'\n'
+            conn.sendall(initial_data)
+            
+            # Send rack update
+            self._send_rack_update(conn)
+        except Exception as e:
+            print(f"[ERROR] Failed to send initial data: {e}")
+
+    def _send_rack_update(self, conn):
+        """Send a player their current rack."""
+        try:
+            rack_data = {
+                'type': 'rack_update',
+                'rack': self.tile_rack,
+                'tiles_remaining': self.tiles_remaining
+            }
+            message = json.dumps(rack_data).encode() + b'\n'
+            conn.sendall(message)
+        except Exception as e:
+            print(f"[ERROR] Failed to send rack update: {e}")
 
     def _set_error(self, msg):
         """Set an error message and schedule it to clear after 3 seconds."""
@@ -2964,7 +2942,10 @@ class ScrabbleClient:
         """Reset all game state variables and disconnect from server if connected."""
         # Try to disconnect from server if connected
         if self.sock:
-            self.send_message("DISCONNECT", True)
+            try:
+                self.sock.sendall("DISCONNECT\n".encode())
+            except:
+                pass
             try:
                 self.sock.close()
             except:
