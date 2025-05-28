@@ -427,7 +427,7 @@ class ScrabbleClient:
                 # Set a timeout for the username response
                 self.sock.settimeout(10.0)
                 self.send_message(f"USERNAME:{username}")
-                response = self._receive_line()
+                _, _, response = self._receive_line()
                 print(f"[DEBUG] Server response: {response}")
                 if response.startswith("ERROR"):
                     self.error_message = f"Server rejected connection: {response[6:]}"
@@ -488,14 +488,20 @@ class ScrabbleClient:
         """Helper to read a complete line (ending in \n) from the socket."""
         while self.running:
             try:
-                if self._recv_buffer == "":
+                if '\n' not in self._recv_buffer:
                     chunk = self.sock.recv(4096).decode()
                     if not chunk:
                         raise ConnectionResetError("Socket closed by peer")
                     self._recv_buffer += chunk
                 if '\n' in self._recv_buffer:
                     line, self._recv_buffer = self._recv_buffer.split('\n', 1)
-                    return line.strip()
+                    packet = line.strip()
+                    if packet[:2].upper() == "OK":
+                        return (None, None, packet)
+                    if ":" in packet and ":" in packet.split(":", 1)[1]:
+                        id, ACK_string, message = packet.split(':', 2)
+                        require_ACK = ACK_string == "Y"
+                        return (id, require_ACK, message)
             except socket.timeout:
                 continue
             except Exception as e:
@@ -508,10 +514,16 @@ class ScrabbleClient:
 
         while self.running and self.sock:
             try:
-                line = self._receive_line()
+                id, require_ACK, line = self._receive_line()
+                if require_ACK:
+                    ACK = f"OK:{id}\n"
+                    print(f"[DEBUG] Sending ACK: {ACK}")
+                    self.sock.sendall(ACK.encode())
+                    print(f"[DEBUG] Sent ACK: {ACK}")
+
                 if not line:
                     continue
-                print(f"[DEBUG] Received line: {repr(line)}")
+                print(f"{time.time()} [DEBUG] Received line: {repr(line)}")
 
                 if line[:2].upper() == "OK":
                     self.ack_queue.put(line)
@@ -541,6 +553,7 @@ class ScrabbleClient:
             except Exception as e:
                 if self.running:
                     print(f"Network error: {e}")
+                    traceback.print_exc()
                     self._handle_server_disconnect(f"Network error: {str(e)}")
                 break
 
@@ -555,7 +568,7 @@ class ScrabbleClient:
     
     def _send_loop(self):
         MAX_RETRIES = 3
-        ACK_TIMEOUT = 2.0  # seconds
+        ACK_TIMEOUT = 0.1  # seconds
 
         while not self.stop_event.is_set():
             try:
@@ -569,7 +582,7 @@ class ScrabbleClient:
 
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
-                    print(f"[DEBUG] Sending message (attempt {attempt}): {message}")
+                    print(f"{time.time()} [DEBUG] Sending message (attempt {attempt}): {message}")
                     self.sock.settimeout(3.0)
                     self.sock.sendall(message.encode())
 
@@ -579,6 +592,8 @@ class ScrabbleClient:
                     # Wait for server ACK
                     try:
                         last_ack = self.ack_queue.get(timeout=ACK_TIMEOUT)
+                        while int(last_ack[3:]) < id:
+                            last_ack = self.ack_queue.get(timeout=ACK_TIMEOUT)
                         if last_ack.upper() == f"OK:{id}":
                             print(f"[DEBUG] Received ACK for message: {message}")
                             break  # ACK received, done

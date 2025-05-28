@@ -1,5 +1,6 @@
 import socket
 import threading
+import queue
 import json
 import time
 import sys
@@ -100,7 +101,13 @@ class ScrabbleServer:
         self.consecutive_passes = 0  # Track consecutive passes
         self.last_move_was_pass = False  # Track if last move was a pass
 
+        self.stop_event = threading.Event()
+        self.send_queue = queue.Queue()
+        self.sender_thread = threading.Thread(target=self._send_loop, daemon=True)
+        self.sender_thread.start()
+        self.ack_queue = queue.Queue()
         self._recv_buffer = ""
+        self._message_ids = {}
         
         # Dictionary and move tracking
         self.dictionary = {}  # {word: definition}
@@ -191,17 +198,10 @@ class ScrabbleServer:
             'board': self.board,
             'blanks': list(self.board_blanks)
         }
-        message = json.dumps(board_data).encode() + b'\n'
+        message = json.dumps(board_data)
         with self.client_lock:
-            clients_to_remove = []
             for client in self.clients[:]:
-                try:
-                    client.sendall(message)
-                except Exception as e:
-                    print(f"[ERROR] Failed to send to {self._get_username(client)}: {e}")
-                    clients_to_remove.append(client)
-            for client in clients_to_remove:
-                self._remove_client(client)
+                self.send_message(client, message, True)
 
     def _broadcast_player_list(self):
         """Send updated player list to all clients."""
@@ -223,13 +223,10 @@ class ScrabbleServer:
 
     def _broadcast_message(self, data):
         """Broadcast JSON message to all clients."""
-        message = json.dumps(data).encode() + b'\n'
+        message = json.dumps(data)
         with self.client_lock:
             for conn in self.clients[:]:
-                try:
-                    conn.sendall(message)
-                except:
-                    self._remove_client(conn)
+                self.send_message(conn, message)
 
     def _send_rack_update(self, conn):
         """Send a player their current rack."""
@@ -244,8 +241,8 @@ class ScrabbleServer:
                 'tiles_remaining': self._get_tiles_remaining(),
                 'username': username
             }
-            message = json.dumps(rack_data).encode() + b'\n'
-            conn.sendall(message)
+            message = json.dumps(rack_data)
+            self.send_message(conn, message, True)
         except Exception as e:
             print(f"[ERROR] Failed to send rack update: {e}")
 
@@ -285,36 +282,96 @@ class ScrabbleServer:
                 if self.current_turn is None:
                     self.current_turn = self.turn_order_in_game[0]
                 # --- End turn system initialization ---
-                conn.sendall("OK:Username accepted\n".encode())
+                self.send_message(conn, "OK:Username accepted")
             self._broadcast_player_list()
         except socket.timeout:
             print(f"Client connection timed out during registration")
             conn.close()
         except Exception as e:
             print(f"Client registration failed: {str(e)}")
+            traceback.print_exc()
             conn.close()
-
     
     def _receive_line(self, conn):
         """Helper to read a complete line (ending in \n) from the socket."""
-        buffer = self._recv_buffer
         while self.running:
             try:
-                chunk = conn.recv(4096).decode()
-                if not chunk:
-                    raise ConnectionResetError("Socket closed by peer")
-                buffer += chunk
-                if '\n' in buffer:
-                    line, buffer = buffer.split('\n', 1)
-                    self._recv_buffer = buffer  # save back for next call
+                if self._recv_buffer == "":
+                    chunk = conn.recv(4096).decode()
+                    if not chunk:
+                        raise ConnectionResetError("Socket closed by peer")
+                    self._recv_buffer += chunk
+                if '\n' in self._recv_buffer:
+                    line, self._recv_buffer = self._recv_buffer.split('\n', 1)
                     packet = line.strip()
-                    id, ACK_string, message = packet.split(':', 2)
-                    require_ACK = ACK_string == "Y"
-                    return (id, ACK_string, message)
+                    if packet[:2].upper() == "OK":
+                        return (None, None, packet)
+                    if ":" in packet and ":" in packet.split(":", 1)[1]:
+                        id, ACK_string, message = packet.split(':', 2)
+                        require_ACK = ACK_string == "Y"
+                        return (id, require_ACK, message)
             except socket.timeout:
                 continue
             except Exception as e:
                 raise e
+
+    def send_message(self, conn, message, require_ACK=False):
+        if conn not in self._message_ids.keys():
+            self._message_ids[conn] = 0
+        id = self._message_ids[conn]
+        self._message_ids[conn] = (self._message_ids[conn] + 1) % 1000000
+        self.send_queue.put({
+            "id": id,
+            "message": message + "\n",
+            "require_ACK": require_ACK,
+            "connection": conn
+        })
+    
+    def _send_loop(self):
+        MAX_RETRIES = 3
+        ACK_TIMEOUT = 0.1  # seconds
+
+        while not self.stop_event.is_set():
+            try:
+                packet = self.send_queue.get(timeout=0.5)
+                id = packet.get("id")
+                require_ACK = packet.get("require_ACK")
+                ACK_string = "Y" if require_ACK else "N"
+                message = f"{id}:{ACK_string}:{packet.get("message")}"
+                connection = packet.get("connection")
+            except queue.Empty:
+                continue  # No message yet; check again
+
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    print(f"{time.time()} [DEBUG] Sending message (attempt {attempt}): {message}")
+                    connection.settimeout(3.0)
+                    connection.sendall(message.encode())
+
+                    if not require_ACK:
+                        break
+
+                    # Wait for server ACK
+                    try:
+                        last_ack = self.ack_queue.get(timeout=ACK_TIMEOUT)
+                        while int(last_ack[3:]) < id:
+                            last_ack = self.ack_queue.get(timeout=ACK_TIMEOUT)
+                        if last_ack.upper() == f"OK:{id}":
+                            print(f"[DEBUG] Received ACK for message: {message}")
+                            break  # ACK received, done
+                        else:
+                            print(f"[WARN] Invalid ACK or server rejected move: {last_ack} for move with ID: {id}")
+                    except queue.Empty:
+                        print(f"[WARN] ACK missing for move with ID: {id}")
+                except socket.timeout:
+                    print(f"[WARN] No ACK received (timeout) on attempt {attempt}")
+                except Exception as e:
+                    print(f"[Send Thread Error] {e}")
+                    break  # Don't retry if socket is broken
+
+            else:
+                print(f"[ERROR] Failed to send message after {MAX_RETRIES} attempts: {message}")
+                # Optionally requeue message or signal error
 
     def _remove_client(self, conn):
         """Remove client and update all relevant state."""
@@ -370,12 +427,9 @@ class ScrabbleServer:
         username = self._get_username(conn)
         if not username:
             return
-        try:
-            initial_data = json.dumps(self.board).encode() + b'\n'
-            conn.sendall(initial_data)
-            self._send_rack_update(conn)
-        except Exception as e:
-            print(f"[ERROR] Failed to send initial data to {username}: {e}")
+        initial_data = json.dumps(self.board)
+        self.send_message(conn, initial_data)
+        self._send_rack_update(conn)
 
     def _parse_move(self, data):
         """Validate and parse move data."""
@@ -753,8 +807,8 @@ class ScrabbleServer:
             print(f"[DRAW] {username} drew {len(new_tiles)} tiles")
             
         except ValueError as e:
-            error_msg = f"Draw Error: {e}\n"
-            conn.sendall(error_msg.encode())
+            error_msg = f"Draw Error: {e}\n".encode()
+            conn.sendall(error_msg)
 
     def _handle_exchange_request(self, conn, tiles_str):
         """Handle tile exchange request."""
@@ -820,8 +874,8 @@ class ScrabbleServer:
             print(f"[EXCHANGE] {username} exchanged {len(tiles_to_exchange)} tiles")
             
         except ValueError as e:
-            error_msg = f"Exchange Error: {e}\n"
-            conn.sendall(error_msg.encode())
+            error_msg = f"Exchange Error: {e}\n".encode()
+            conn.sendall(error_msg)
 
     def _handle_client(self, conn, addr):
         """Main client handler loop."""
@@ -843,7 +897,7 @@ class ScrabbleServer:
             while self.running:
                 try:
                     id, require_ACK, data = self._receive_line(conn)
-                    print(f"[DEBUG] Received client packet {data}")
+                    print(f"{time.time()} [DEBUG] Received client packet {data}")
                     if require_ACK:
                         ACK = f"OK:{id}\n"
                         print(f"[DEBUG] Sending ACK: {ACK}")
@@ -852,6 +906,9 @@ class ScrabbleServer:
                     if not data:
                         print(f"[DISCONNECT] Client {username or addr} disconnected (no data)")
                         break
+                    if data[:2].upper() == "OK":
+                        self.ack_queue.put(data)
+                        continue
                     try:
                         if data == "DISCONNECT":
                             print(f"[DISCONNECT] Client {username or addr} requested disconnect")
@@ -1037,6 +1094,9 @@ class ScrabbleServer:
         # Wait for all handler threads to finish
         for t in self.handler_threads:
             t.join(timeout=2)
+        # Stop send thread
+        self.stop_event.set()
+        self.sender_thread.join(timeout=2.0)
         print("[SERVER] Stopped")
 
     # Additional utility methods
@@ -1146,13 +1206,10 @@ class ScrabbleServer:
             "type": "move_log",
             "moves": self.move_log
         }
-        message = json.dumps(move_log_data).encode() + b'\n'
+        message = json.dumps(move_log_data)
         with self.client_lock:
             for conn in self.clients[:]:
-                try:
-                    conn.sendall(message)
-                except:
-                    self._remove_client(conn)
+                self.send_message(conn, message)
 
     def _get_word_at_position(self, row, col, horizontal=True):
         """Get the word at a given position, including any extensions."""
