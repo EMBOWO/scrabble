@@ -661,6 +661,10 @@ class ScrabbleClient:
                         if self.letter_buffer:
                             print("[DEBUG] Returning buffered tiles to rack due to board update")
                             self._return_all_letters()
+                        
+                        self.dragging_tile = False
+                        self.dragging_from_board = False
+
                         # Store the blank positions before any operations
                         blank_positions = set(tuple(pos) for pos in data['blanks'])
                         # Update the board and blank tiles before any buffer operations
